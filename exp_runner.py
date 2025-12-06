@@ -327,6 +327,9 @@ class Runner:
         return img_fine
 
     def validate_mesh(self, world_space=False, resolution=64, threshold=0.0):
+        logging.info('validate_mesh skipped: PyMCubes-dependent path temporarily disabled.')
+        return
+
         bound_min = torch.tensor(self.dataset.object_bbox_min, dtype=torch.float32)
         bound_max = torch.tensor(self.dataset.object_bbox_max, dtype=torch.float32)
 
