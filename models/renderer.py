@@ -3,7 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import logging
-import mcubes
+try:
+    import mcubes
+except ImportError:
+    mcubes = None
+    print('[renderer] Warning: mcubes not available; mesh extraction will be disabled.')
 from icecream import ic
 
 
@@ -26,6 +30,8 @@ def extract_fields(bound_min, bound_max, resolution, query_func):
 
 
 def extract_geometry(bound_min, bound_max, resolution, threshold, query_func):
+    if mcubes is None:
+        raise RuntimeError("Mesh extraction requires PyMCubes (mcubes), but it is not installed.")
     print('threshold: {}'.format(threshold))
     u = extract_fields(bound_min, bound_max, resolution, query_func)
     vertices, triangles = mcubes.marching_cubes(u, threshold)

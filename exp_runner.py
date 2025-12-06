@@ -116,11 +116,13 @@ class Runner:
             data = data.to(self.device)
 
             rays_o, rays_d, true_rgb, mask = data[:, :3], data[:, 3: 6], data[:, 6: 9], data[:, 9: 10]
-            near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
+            near, far = self.dataset.near_far_from_sphere(rays_o.cpu(), rays_d.cpu())
+            near = near.to(self.device)
+            far = far.to(self.device)
 
             background_rgb = None
             if self.use_white_bkgd:
-                background_rgb = torch.ones([1, 3])
+                background_rgb = torch.ones([1, 3], device=self.device)
 
             if self.mask_weight > 0.0:
                 mask = (mask > 0.5).float()
@@ -260,8 +262,10 @@ class Runner:
         out_normal_fine = []
 
         for rays_o_batch, rays_d_batch in zip(rays_o, rays_d):
-            near, far = self.dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)
-            background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
+            near, far = self.dataset.near_far_from_sphere(rays_o_batch.cpu(), rays_d_batch.cpu())
+            near = near.to(self.device)
+            far = far.to(self.device)
+            background_rgb = torch.ones([1, 3], device=self.device) if self.use_white_bkgd else None
 
             render_out = self.renderer.render(rays_o_batch,
                                               rays_d_batch,
@@ -323,8 +327,10 @@ class Runner:
 
         out_rgb_fine = []
         for rays_o_batch, rays_d_batch in zip(rays_o, rays_d):
-            near, far = self.dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)
-            background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
+            near, far = self.dataset.near_far_from_sphere(rays_o_batch.cpu(), rays_d_batch.cpu())
+            near = near.to(self.device)
+            far = far.to(self.device)
+            background_rgb = torch.ones([1, 3], device=self.device) if self.use_white_bkgd else None
 
             render_out = self.renderer.render(rays_o_batch,
                                               rays_d_batch,
