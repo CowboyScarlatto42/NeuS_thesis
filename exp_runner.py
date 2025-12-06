@@ -20,10 +20,19 @@ from models.renderer import NeuSRenderer
 class Runner:
     def __init__(self, conf_path, mode='train', case='CASE_NAME', is_continue=False):
 
-        self.device = torch.device('cuda')
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Configuration
         self.conf_path = conf_path
+        if not os.path.isabs(self.conf_path):
+            rel_candidate = os.path.join(os.path.dirname(__file__), self.conf_path)
+            if os.path.isfile(rel_candidate):
+                self.conf_path = rel_candidate
+        if not os.path.isfile(self.conf_path):
+            conf_dir = os.path.join(os.path.dirname(__file__), 'confs')
+            available = sorted([f for f in os.listdir(conf_dir) if f.endswith('.conf')]) if os.path.isdir(conf_dir) else []
+            raise FileNotFoundError(f'Config file not found: {conf_path}. Available .conf files in {conf_dir}: {available}')
+
         f = open(self.conf_path)
         conf_text = f.read()
         conf_text = conf_text.replace('CASE_NAME', case)
@@ -104,6 +113,7 @@ class Runner:
 
         for iter_i in tqdm(range(res_step)):
             data = self.dataset.gen_random_rays_at(image_perm[self.iter_step % len(image_perm)], self.batch_size)
+            data = data.to(self.device)
 
             rays_o, rays_d, true_rgb, mask = data[:, :3], data[:, 3: 6], data[:, 6: 9], data[:, 9: 10]
             near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
@@ -240,6 +250,8 @@ class Runner:
         if resolution_level < 0:
             resolution_level = self.validate_resolution_level
         rays_o, rays_d = self.dataset.gen_rays_at(idx, resolution_level=resolution_level)
+        rays_o = rays_o.to(self.device)
+        rays_d = rays_d.to(self.device)
         H, W, _ = rays_o.shape
         rays_o = rays_o.reshape(-1, 3).split(self.batch_size)
         rays_d = rays_d.reshape(-1, 3).split(self.batch_size)
@@ -303,6 +315,8 @@ class Runner:
         Interpolate view between two cameras.
         """
         rays_o, rays_d = self.dataset.gen_rays_between(idx_0, idx_1, ratio, resolution_level=resolution_level)
+        rays_o = rays_o.to(self.device)
+        rays_d = rays_d.to(self.device)
         H, W, _ = rays_o.shape
         rays_o = rays_o.reshape(-1, 3).split(self.batch_size)
         rays_d = rays_d.reshape(-1, 3).split(self.batch_size)
@@ -373,13 +387,11 @@ class Runner:
 if __name__ == '__main__':
     print('Hello Wooden')
 
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
-
     FORMAT = "[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s"
     logging.basicConfig(level=logging.DEBUG, format=FORMAT)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--conf', type=str, default='./confs/base.conf')
+    parser.add_argument('--conf', type=str, default='./confs/wmask.conf')
     parser.add_argument('--mode', type=str, default='train')
     parser.add_argument('--mcube_threshold', type=float, default=0.0)
     parser.add_argument('--is_continue', default=False, action="store_true")
