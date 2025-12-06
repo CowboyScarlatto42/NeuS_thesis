@@ -49,12 +49,13 @@ def sample_pdf(bins, weights, n_samples, det=False):
     pdf = weights / torch.sum(weights, -1, keepdim=True)
     cdf = torch.cumsum(pdf, -1)
     cdf = torch.cat([torch.zeros_like(cdf[..., :1]), cdf], -1)
+    device = bins.device
     # Take uniform samples
     if det:
-        u = torch.linspace(0. + 0.5 / n_samples, 1. - 0.5 / n_samples, steps=n_samples)
+        u = torch.linspace(0. + 0.5 / n_samples, 1. - 0.5 / n_samples, steps=n_samples, device=device)
         u = u.expand(list(cdf.shape[:-1]) + [n_samples])
     else:
-        u = torch.rand(list(cdf.shape[:-1]) + [n_samples])
+        u = torch.rand(list(cdf.shape[:-1]) + [n_samples], device=device)
 
     # Invert CDF
     u = u.contiguous()
@@ -104,7 +105,7 @@ class NeuSRenderer:
 
         # Section length
         dists = z_vals[..., 1:] - z_vals[..., :-1]
-        dists = torch.cat([dists, torch.Tensor([sample_dist]).expand(dists[..., :1].shape)], -1)
+        dists = torch.cat([dists, torch.full_like(dists[..., :1], sample_dist)], -1)
         mid_z_vals = z_vals + dists * 0.5
 
         # Section midpoints
@@ -122,7 +123,7 @@ class NeuSRenderer:
         sampled_color = torch.sigmoid(sampled_color)
         alpha = 1.0 - torch.exp(-F.softplus(density.reshape(batch_size, n_samples)) * dists)
         alpha = alpha.reshape(batch_size, n_samples)
-        weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1]), 1. - alpha + 1e-7], -1), -1)[:, :-1]
+        weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], device=alpha.device), 1. - alpha + 1e-7], -1), -1)[:, :-1]
         sampled_color = sampled_color.reshape(batch_size, n_samples, 3)
         color = (weights[:, :, None] * sampled_color).sum(dim=1)
         if background_rgb is not None:
@@ -164,7 +165,7 @@ class NeuSRenderer:
         # |     \/
         # |
         # ----------------------------------------------------------------------------------------------------------
-        prev_cos_val = torch.cat([torch.zeros([batch_size, 1]), cos_val[:, :-1]], dim=-1)
+        prev_cos_val = torch.cat([torch.zeros([batch_size, 1], device=cos_val.device), cos_val[:, :-1]], dim=-1)
         cos_val = torch.stack([prev_cos_val, cos_val], dim=-1)
         cos_val, _ = torch.min(cos_val, dim=-1, keepdim=False)
         cos_val = cos_val.clip(-1e3, 0.0) * inside_sphere
@@ -176,7 +177,7 @@ class NeuSRenderer:
         next_cdf = torch.sigmoid(next_esti_sdf * inv_s)
         alpha = (prev_cdf - next_cdf + 1e-5) / (prev_cdf + 1e-5)
         weights = alpha * torch.cumprod(
-            torch.cat([torch.ones([batch_size, 1]), 1. - alpha + 1e-7], -1), -1)[:, :-1]
+            torch.cat([torch.ones([batch_size, 1], device=alpha.device), 1. - alpha + 1e-7], -1), -1)[:, :-1]
 
         z_samples = sample_pdf(z_vals, weights, n_importance, det=True).detach()
         return z_samples
@@ -213,7 +214,7 @@ class NeuSRenderer:
 
         # Section length
         dists = z_vals[..., 1:] - z_vals[..., :-1]
-        dists = torch.cat([dists, torch.Tensor([sample_dist]).expand(dists[..., :1].shape)], -1)
+        dists = torch.cat([dists, torch.full_like(dists[..., :1], sample_dist)], -1)
         mid_z_vals = z_vals + dists * 0.5
 
         # Section midpoints
@@ -230,7 +231,7 @@ class NeuSRenderer:
         gradients = sdf_network.gradient(pts).squeeze()
         sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
 
-        inv_s = deviation_network(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6)           # Single parameter
+        inv_s = deviation_network(torch.zeros([1, 3], device=pts.device))[:, :1].clip(1e-6, 1e6)           # Single parameter
         inv_s = inv_s.expand(batch_size * n_samples, 1)
 
         true_cos = (dirs * gradients).sum(-1, keepdim=True)
@@ -264,7 +265,7 @@ class NeuSRenderer:
                             background_sampled_color[:, :n_samples] * (1.0 - inside_sphere)[:, :, None]
             sampled_color = torch.cat([sampled_color, background_sampled_color[:, n_samples:]], dim=1)
 
-        weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1]), 1. - alpha + 1e-7], -1), -1)[:, :-1]
+        weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], device=alpha.device), 1. - alpha + 1e-7], -1), -1)[:, :-1]
         weights_sum = weights.sum(dim=-1, keepdim=True)
 
         color = (sampled_color * weights[:, :, None]).sum(dim=1)
@@ -291,13 +292,14 @@ class NeuSRenderer:
 
     def render(self, rays_o, rays_d, near, far, perturb_overwrite=-1, background_rgb=None, cos_anneal_ratio=0.0):
         batch_size = len(rays_o)
+        device = rays_o.device
         sample_dist = 2.0 / self.n_samples   # Assuming the region of interest is a unit sphere
-        z_vals = torch.linspace(0.0, 1.0, self.n_samples)
+        z_vals = torch.linspace(0.0, 1.0, self.n_samples, device=device)
         z_vals = near + (far - near) * z_vals[None, :]
 
         z_vals_outside = None
         if self.n_outside > 0:
-            z_vals_outside = torch.linspace(1e-3, 1.0 - 1.0 / (self.n_outside + 1.0), self.n_outside)
+            z_vals_outside = torch.linspace(1e-3, 1.0 - 1.0 / (self.n_outside + 1.0), self.n_outside, device=device)
 
         n_samples = self.n_samples
         perturb = self.perturb
@@ -305,14 +307,14 @@ class NeuSRenderer:
         if perturb_overwrite >= 0:
             perturb = perturb_overwrite
         if perturb > 0:
-            t_rand = (torch.rand([batch_size, 1]) - 0.5)
+            t_rand = (torch.rand([batch_size, 1], device=device) - 0.5)
             z_vals = z_vals + t_rand * 2.0 / self.n_samples
 
             if self.n_outside > 0:
                 mids = .5 * (z_vals_outside[..., 1:] + z_vals_outside[..., :-1])
                 upper = torch.cat([mids, z_vals_outside[..., -1:]], -1)
                 lower = torch.cat([z_vals_outside[..., :1], mids], -1)
-                t_rand = torch.rand([batch_size, z_vals_outside.shape[-1]])
+                t_rand = torch.rand([batch_size, z_vals_outside.shape[-1]], device=device)
                 z_vals_outside = lower[None, :] + (upper - lower)[None, :] * t_rand
 
         if self.n_outside > 0:
