@@ -347,23 +347,31 @@ class Runner:
         return img_fine
 
     def validate_mesh(self, world_space=False, resolution=64, threshold=0.0):
-        logging.info('validate_mesh skipped: PyMCubes-dependent path temporarily disabled.')
-        return
+        try:
+            import mcubes
+        except ImportError as e:
+            print('[validate_mesh] mcubes not available:', e)
+            return
 
-        bound_min = torch.tensor(self.dataset.object_bbox_min, dtype=torch.float32)
-        bound_max = torch.tensor(self.dataset.object_bbox_max, dtype=torch.float32)
+        try:
+            bound_min = torch.tensor(self.dataset.object_bbox_min, dtype=torch.float32)
+            bound_max = torch.tensor(self.dataset.object_bbox_max, dtype=torch.float32)
 
-        vertices, triangles =\
-            self.renderer.extract_geometry(bound_min, bound_max, resolution=resolution, threshold=threshold)
-        os.makedirs(os.path.join(self.base_exp_dir, 'meshes'), exist_ok=True)
+            vertices, triangles =\
+                self.renderer.extract_geometry(bound_min, bound_max, resolution=resolution, threshold=threshold)
+            os.makedirs(os.path.join(self.base_exp_dir, 'meshes'), exist_ok=True)
 
-        if world_space:
-            vertices = vertices * self.dataset.scale_mats_np[0][0, 0] + self.dataset.scale_mats_np[0][:3, 3][None]
+            if world_space:
+                vertices = vertices * self.dataset.scale_mats_np[0][0, 0] + self.dataset.scale_mats_np[0][:3, 3][None]
 
-        mesh = trimesh.Trimesh(vertices, triangles)
-        mesh.export(os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}.ply'.format(self.iter_step)))
+            mesh = trimesh.Trimesh(vertices, triangles)
+            mesh.export(os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}.ply'.format(self.iter_step)))
 
-        logging.info('End')
+            logging.info('End')
+        except Exception as e:
+            print('[validate_mesh] error during marching cubes:', e)
+            print('Mesh extraction skipped, but training/validation continues.')
+            return
 
     def interpolate_view(self, img_idx_0, img_idx_1):
         images = []
