@@ -354,8 +354,12 @@ class Runner:
             return
 
         try:
-            bound_min = torch.tensor(self.dataset.object_bbox_min, dtype=torch.float32)
-            bound_max = torch.tensor(self.dataset.object_bbox_max, dtype=torch.float32)
+            bound_min = torch.tensor(self.dataset.object_bbox_min,
+                                     dtype=torch.float32,
+                                     device=self.device)
+            bound_max = torch.tensor(self.dataset.object_bbox_max,
+                                     dtype=torch.float32,
+                                     device=self.device)
 
             vertices, triangles =\
                 self.renderer.extract_geometry(bound_min, bound_max, resolution=resolution, threshold=threshold)
