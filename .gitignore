@@ -154,3 +154,39 @@ data
 public_data
 exp
 tmp
+
+
+# =====================
+# NeuS specific
+# =====================
+
+# Checkpoints
+*.pth
+*.ckpt
+checkpoints/
+ckpts/
+
+# Runs / outputs
+runs/
+outputs/
+logs/
+wandb/
+
+# Meshes
+*.ply
+*.obj
+*.stl
+*.glb
+*.gltf
+
+# Renders / media
+*.png
+*.jpg
+*.jpeg
+*.exr
+*.gif
+*.mp4
+
+# macOS
+.DS_Store
+
