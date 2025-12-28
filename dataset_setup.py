@@ -180,92 +180,105 @@ def nested_from_32(sequence32, k):
     step = len(sequence32) // k
     return [sequence32[i] for i in range(0, len(sequence32), step)][:k]
 
-# --- define target and plane ---
-target = centers.mean(axis=0)          # proxy for object center
-X = centers - target
-e1, e2 = pca_plane_basis(X)
+def generate_nmc_splits(ids, centers, vdirs, output_prefix):
+    if ids.size == 0:
+        raise ValueError(f"Empty subset for prefix {output_prefix}")
 
-# --- choose Δx based on dataset scale (safety ellipse on the point cloud sphere) ---
-r = np.linalg.norm(centers - target, axis=1)
-r_med = float(np.median(r))
-delta_x = 2.0 * r_med  # because NMC amplitude in x is Δx/2 ~ r_med
-print(f"[INFO] NMC: auto Δx = {delta_x:.3f} (median radius {r_med:.3f})")
+    print(f"\n[INFO] Generating NMC splits for {output_prefix}: {ids.size} views (id range {ids.min()}..{ids.max()})")
 
-# --- matching weights (position vs angle) ---
-wp = 1.0
-wa = r_med   # 1 rad (~57°) ~ cost of moving ~r_med in space
-print(f"[INFO] Matching weights: wp={wp} | wa={wa:.3f}")
+    # --- define target and plane ---
+    target = centers.mean(axis=0)          # proxy for object center
+    X = centers - target
+    e1, e2 = pca_plane_basis(X)
 
-# --- build desired orbit (k=32), embed in dataset plane ---
-KMAX = max(SIZES)
-x, z = nmc_points(KMAX, delta_x, omega=1.0)
-desired_pos_32 = target[None, :] + x[:, None] * e1[None, :] + z[:, None] * e2[None, :]
-desired_dir_32 = look_at_dirs(desired_pos_32, target)
+    # --- choose Δx based on dataset scale (safety ellipse on the point cloud sphere) ---
+    r = np.linalg.norm(centers - target, axis=1)
+    r_med = float(np.median(r))
+    delta_x = 2.0 * r_med  # because NMC amplitude in x is Δx/2 ~ r_med
+    print(f"[INFO] NMC: auto Δx = {delta_x:.3f} (median radius {r_med:.3f})")
 
-# --- match desired points to nearest dataset views ---
-chosen_idx_32 = greedy_match(centers, vdirs, desired_pos_32, desired_dir_32, wp=wp, wa=wa)
-chosen_view_ids_32 = ids[chosen_idx_32]
+    # --- matching weights (position vs angle) ---
+    wp = 1.0
+    wa = r_med   # 1 rad (~57°) ~ cost of moving ~r_med in space
+    print(f"[INFO] Matching weights: wp={wp} | wa={wa:.3f}")
 
-# --- save nested splits ---
-os.makedirs(SPLIT_DIR, exist_ok=True)
-for k in SIZES:
-    subset = nested_from_32(chosen_view_ids_32, k)
-    out = os.path.join(SPLIT_DIR, f"hst_nmc_{k}.txt")
-    with open(out, "w") as f:
-        for vid in subset:
-            f.write(viewname(vid) + "\n")
-    print(f"[OK] wrote {out} ({k} views)")
+    # --- build desired orbit (k=32), embed in dataset plane ---
+    KMAX = max(SIZES)
+    x, z = nmc_points(KMAX, delta_x, omega=1.0)
+    desired_pos_32 = target[None, :] + x[:, None] * e1[None, :] + z[:, None] * e2[None, :]
+    desired_dir_32 = look_at_dirs(desired_pos_32, target)
 
-print("[DONE] NMC orbit-like nested splits generated.\n")
+    # --- match desired points to nearest dataset views ---
+    chosen_idx_32 = greedy_match(centers, vdirs, desired_pos_32, desired_dir_32, wp=wp, wa=wa)
+    chosen_view_ids_32 = ids[chosen_idx_32]
 
-# ============================================================
-# Part C — Visual validation of orbit-like selection
-# ============================================================
+    # --- save nested splits ---
+    os.makedirs(SPLIT_DIR, exist_ok=True)
+    for k in SIZES:
+        subset = nested_from_32(chosen_view_ids_32, k)
+        out = os.path.join(SPLIT_DIR, f"{output_prefix}_nmc_{k}.txt")
+        with open(out, "w") as f:
+            for vid in subset:
+                f.write(viewname(vid) + "\n")
+        print(f"[OK] wrote {out} ({k} views)")
 
-selected_idx_32 = [np.where(ids == vid)[0][0] for vid in chosen_view_ids_32]
-selected_centers_32 = centers[selected_idx_32]
-selected_dirs_32 = vdirs[selected_idx_32]
+    print(f"[DONE] NMC orbit-like nested splits generated for {output_prefix}.\n")
 
-# --- plot: orbit in 3D + selected centers ---
-fig = plt.figure(figsize=(8, 7))
-ax = fig.add_subplot(111, projection="3d")
+    # ============================================================
+    # Part C — Visual validation of orbit-like selection
+    # ============================================================
 
-ax.scatter(centers[:, 0], centers[:, 1], centers[:, 2], s=5, alpha=0.2, label="All camera centers")
-ax.plot(desired_pos_32[:, 0], desired_pos_32[:, 1], desired_pos_32[:, 2], "k--", linewidth=2, label="Desired NMC orbit")
-ax.scatter(selected_centers_32[:, 0], selected_centers_32[:, 1], selected_centers_32[:, 2], c="orange", s=50, label="Selected views (k=32)")
-ax.scatter(target[0], target[1], target[2], c="red", s=80, marker="*", label="Target center")
+    selected_idx_32 = [np.where(ids == vid)[0][0] for vid in chosen_view_ids_32]
+    selected_centers_32 = centers[selected_idx_32]
+    selected_dirs_32 = vdirs[selected_idx_32]
 
-ax.set_title("NMC orbit-like view selection (camera centers)")
-ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-ax.legend()
-ax.set_box_aspect([1, 1, 1])
-plt.tight_layout()
-plt.show()
+    # --- plot: orbit in 3D + selected centers ---
+    fig = plt.figure(figsize=(8, 7))
+    ax = fig.add_subplot(111, projection="3d")
 
-# --- plot: continuity (distance between consecutive selected views) ---
-dist_seq = np.linalg.norm(selected_centers_32[1:] - selected_centers_32[:-1], axis=1)
+    ax.scatter(centers[:, 0], centers[:, 1], centers[:, 2], s=5, alpha=0.2, label="All camera centers")
+    ax.plot(desired_pos_32[:, 0], desired_pos_32[:, 1], desired_pos_32[:, 2], "k--", linewidth=2, label="Desired NMC orbit")
+    ax.scatter(selected_centers_32[:, 0], selected_centers_32[:, 1], selected_centers_32[:, 2], c="orange", s=50, label="Selected views (k=32)")
+    ax.scatter(target[0], target[1], target[2], c="red", s=80, marker="*", label="Target center")
 
-plt.figure(figsize=(7, 3))
-plt.plot(dist_seq, "-o", markersize=3)
-plt.xlabel("Step along orbit")
-plt.ylabel("Distance between consecutive views")
-plt.title("Continuity check along NMC selection")
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+    ax.set_title(f"NMC orbit-like view selection ({output_prefix})")
+    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+    ax.legend()
+    ax.set_box_aspect([1, 1, 1])
+    plt.tight_layout()
+    plt.show()
 
-# --- plot: viewing directions on unit sphere (sanity check) ---
-fig = plt.figure(figsize=(6, 6))
-ax = fig.add_subplot(111, projection="3d")
+    # --- plot: continuity (distance between consecutive selected views) ---
+    dist_seq = np.linalg.norm(selected_centers_32[1:] - selected_centers_32[:-1], axis=1)
 
-ax.scatter(vdirs[:, 0], vdirs[:, 1], vdirs[:, 2], s=5, alpha=0.2, label="All viewing directions")
-ax.scatter(selected_dirs_32[:, 0], selected_dirs_32[:, 1], selected_dirs_32[:, 2], c="orange", s=50, label="Selected directions")
+    plt.figure(figsize=(7, 3))
+    plt.plot(dist_seq, "-o", markersize=3)
+    plt.xlabel("Step along orbit")
+    plt.ylabel("Distance between consecutive views")
+    plt.title(f"Continuity check along NMC selection ({output_prefix})")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
 
-ax.set_title("Viewing directions (unit sphere)")
-ax.set_box_aspect([1, 1, 1])
-ax.legend()
-plt.tight_layout()
-plt.show()
+    # --- plot: viewing directions on unit sphere (sanity check) ---
+    fig = plt.figure(figsize=(6, 6))
+    ax = fig.add_subplot(111, projection="3d")
+
+    ax.scatter(vdirs[:, 0], vdirs[:, 1], vdirs[:, 2], s=5, alpha=0.2, label="All viewing directions")
+    ax.scatter(selected_dirs_32[:, 0], selected_dirs_32[:, 1], selected_dirs_32[:, 2], c="orange", s=50, label="Selected directions")
+
+    ax.set_title(f"Viewing directions (unit sphere) — {output_prefix}")
+    ax.set_box_aspect([1, 1, 1])
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+black_mask = (ids >= 0) & (ids <= 500)
+earth_mask = (ids >= 501) & (ids <= 999)
+
+generate_nmc_splits(ids[black_mask], centers[black_mask], vdirs[black_mask], "hst_black")
+generate_nmc_splits(ids[earth_mask], centers[earth_mask], vdirs[earth_mask], "hst_earth")
 
 print("[FINAL CHECK]")
 print("- First plots: confirm dataset index is not an orbit order.")
