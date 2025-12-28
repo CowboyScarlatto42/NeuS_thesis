@@ -102,17 +102,25 @@ def main():
     splits_dir = Path(args.splits_dir)
     out_data_dir = Path(args.out_data_dir)
 
-    src_images = src_dataset / "images"
-    src_masks = src_dataset / "masks"
+    image_candidates = [src_dataset / "images", src_dataset / "image"]
+    mask_candidates = [src_dataset / "masks", src_dataset / "mask"]
+
+    src_images = next((p for p in image_candidates if p.exists()), None)
+    src_masks = next((p for p in mask_candidates if p.exists()), None)
     src_npz = src_dataset / "cameras_spe3r.npz"
 
-    if not src_images.exists() or not src_masks.exists() or not src_npz.exists():
+    if src_images is None or src_masks is None or not src_npz.exists():
         raise FileNotFoundError(
-            "src_dataset must contain images/, masks/, cameras_spe3r.npz\n"
-            f"Got:\n- {src_images} exists={src_images.exists()}\n"
-            f"- {src_masks} exists={src_masks.exists()}\n"
+            "src_dataset must contain images/ or image/, masks/ or mask/, cameras_spe3r.npz\n"
+            f"Checked:\n- images: {image_candidates[0]} exists={image_candidates[0].exists()}\n"
+            f"- image : {image_candidates[1]} exists={image_candidates[1].exists()}\n"
+            f"- masks : {mask_candidates[0]} exists={mask_candidates[0].exists()}\n"
+            f"- mask  : {mask_candidates[1]} exists={mask_candidates[1].exists()}\n"
             f"- {src_npz} exists={src_npz.exists()}"
         )
+
+    print(f"Using src_images: {src_images}")
+    print(f"Using src_masks : {src_masks}")
 
     split_files = sorted(splits_dir.glob(args.pattern))
     if not split_files:
