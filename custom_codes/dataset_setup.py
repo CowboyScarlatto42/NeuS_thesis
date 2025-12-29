@@ -274,8 +274,8 @@ def generate_nmc_splits(ids, centers, vdirs, output_prefix):
     plt.show()
 
 
-black_mask = (ids >= 0) & (ids <= 500)
-earth_mask = (ids >= 501) & (ids <= 999)
+black_mask = (ids >= 0) & (ids <= 499)
+earth_mask = (ids >= 500) & (ids <= 999)
 
 generate_nmc_splits(ids[black_mask], centers[black_mask], vdirs[black_mask], "hst_black")
 generate_nmc_splits(ids[earth_mask], centers[earth_mask], vdirs[earth_mask], "hst_earth")
