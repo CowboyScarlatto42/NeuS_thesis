@@ -203,7 +203,7 @@ def generate_nmc_splits(ids, centers, vdirs, output_prefix):
     print(f"[INFO] Matching weights: wp={wp} | wa={wa:.3f}")
 
     # --- build desired orbit (k=32), embed in dataset plane ---
-    KMAX = max(SIZES)
+    KMAX = 64
     x, z = nmc_points(KMAX, delta_x, omega=1.0)
     desired_pos_32 = target[None, :] + x[:, None] * e1[None, :] + z[:, None] * e2[None, :]
     desired_dir_32 = look_at_dirs(desired_pos_32, target)
