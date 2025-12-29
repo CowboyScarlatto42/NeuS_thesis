@@ -21,7 +21,7 @@ NPZ_PATH  = "/content/drive/MyDrive/Tesi/neus/serious_analysis/data/hst_neus/cam
 SPLIT_DIR = "/content/drive/MyDrive/Tesi/neus/serious_analysis/splits"
 
 # ---- settings ----
-SIZES = [4, 8, 16, 32]
+SIZES = [4, 8, 16, 32, 64]
 LABEL_STEP_TEXT = 40   # controls how many labels to show in the "ordering" plot
 
 # ============================================================
@@ -175,10 +175,10 @@ def greedy_match(centers, dirs, desired_pos, desired_dir, wp=1.0, wa=1.0):
 def viewname(i):
     return f"{int(i):03d}.png"
 
-def nested_from_32(sequence32, k):
-    # deterministic nested subsets from the 32-point sequence
-    step = len(sequence32) // k
-    return [sequence32[i] for i in range(0, len(sequence32), step)][:k]
+def nested_from_sequence(sequence, k):
+    # deterministic nested subsets from the base sequence
+    step = len(sequence) // k
+    return [sequence[i] for i in range(0, len(sequence), step)][:k]
 
 def generate_nmc_splits(ids, centers, vdirs, output_prefix):
     if ids.size == 0:
@@ -205,17 +205,17 @@ def generate_nmc_splits(ids, centers, vdirs, output_prefix):
     # --- build desired orbit (k=32), embed in dataset plane ---
     KMAX = 64
     x, z = nmc_points(KMAX, delta_x, omega=1.0)
-    desired_pos_32 = target[None, :] + x[:, None] * e1[None, :] + z[:, None] * e2[None, :]
-    desired_dir_32 = look_at_dirs(desired_pos_32, target)
+    desired_pos = target[None, :] + x[:, None] * e1[None, :] + z[:, None] * e2[None, :]
+    desired_dir = look_at_dirs(desired_pos, target)
 
     # --- match desired points to nearest dataset views ---
-    chosen_idx_32 = greedy_match(centers, vdirs, desired_pos_32, desired_dir_32, wp=wp, wa=wa)
-    chosen_view_ids_32 = ids[chosen_idx_32]
+    chosen_idx = greedy_match(centers, vdirs, desired_pos, desired_dir, wp=wp, wa=wa)
+    chosen_view_ids = ids[chosen_idx]
 
     # --- save nested splits ---
     os.makedirs(SPLIT_DIR, exist_ok=True)
     for k in SIZES:
-        subset = nested_from_32(chosen_view_ids_32, k)
+        subset = nested_from_sequence(chosen_view_ids, k)
         out = os.path.join(SPLIT_DIR, f"{output_prefix}_nmc_{k}.txt")
         with open(out, "w") as f:
             for vid in subset:
@@ -228,17 +228,17 @@ def generate_nmc_splits(ids, centers, vdirs, output_prefix):
     # Part C — Visual validation of orbit-like selection
     # ============================================================
 
-    selected_idx_32 = [np.where(ids == vid)[0][0] for vid in chosen_view_ids_32]
-    selected_centers_32 = centers[selected_idx_32]
-    selected_dirs_32 = vdirs[selected_idx_32]
+    selected_idx = [np.where(ids == vid)[0][0] for vid in chosen_view_ids]
+    selected_centers = centers[selected_idx]
+    selected_dirs = vdirs[selected_idx]
 
     # --- plot: orbit in 3D + selected centers ---
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection="3d")
 
     ax.scatter(centers[:, 0], centers[:, 1], centers[:, 2], s=5, alpha=0.2, label="All camera centers")
-    ax.plot(desired_pos_32[:, 0], desired_pos_32[:, 1], desired_pos_32[:, 2], "k--", linewidth=2, label="Desired NMC orbit")
-    ax.scatter(selected_centers_32[:, 0], selected_centers_32[:, 1], selected_centers_32[:, 2], c="orange", s=50, label="Selected views (k=32)")
+    ax.plot(desired_pos[:, 0], desired_pos[:, 1], desired_pos[:, 2], "k--", linewidth=2, label="Desired NMC orbit")
+    ax.scatter(selected_centers[:, 0], selected_centers[:, 1], selected_centers[:, 2], c="orange", s=50, label="Selected views (k=32)")
     ax.scatter(target[0], target[1], target[2], c="red", s=80, marker="*", label="Target center")
 
     ax.set_title(f"NMC orbit-like view selection ({output_prefix})")
@@ -249,7 +249,7 @@ def generate_nmc_splits(ids, centers, vdirs, output_prefix):
     plt.show()
 
     # --- plot: continuity (distance between consecutive selected views) ---
-    dist_seq = np.linalg.norm(selected_centers_32[1:] - selected_centers_32[:-1], axis=1)
+    dist_seq = np.linalg.norm(selected_centers[1:] - selected_centers[:-1], axis=1)
 
     plt.figure(figsize=(7, 3))
     plt.plot(dist_seq, "-o", markersize=3)
@@ -265,7 +265,7 @@ def generate_nmc_splits(ids, centers, vdirs, output_prefix):
     ax = fig.add_subplot(111, projection="3d")
 
     ax.scatter(vdirs[:, 0], vdirs[:, 1], vdirs[:, 2], s=5, alpha=0.2, label="All viewing directions")
-    ax.scatter(selected_dirs_32[:, 0], selected_dirs_32[:, 1], selected_dirs_32[:, 2], c="orange", s=50, label="Selected directions")
+    ax.scatter(selected_dirs[:, 0], selected_dirs[:, 1], selected_dirs[:, 2], c="orange", s=50, label="Selected directions")
 
     ax.set_title(f"Viewing directions (unit sphere) — {output_prefix}")
     ax.set_box_aspect([1, 1, 1])
