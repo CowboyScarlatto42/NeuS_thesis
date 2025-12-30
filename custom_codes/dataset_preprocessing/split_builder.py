@@ -12,12 +12,12 @@ Split files contain 0-based indices:
   EARTH: 500..999
 
 For each split txt (e.g. hst_black_nmc_4.txt, hst_earth_nmc_32.txt), creates:
-  out_data_dir/<split_name>/
-    images/ (000.png..)
-    masks/  (000.png..)
-    cameras_spe3r.npz (subset + remapped mats)
-    split_used.txt
-    index_map.json
+    out_data_dir/<split_name>/
+        image/ (000.png..)
+        mask/  (000.png..)
+        cameras_spe3r.npz (subset + remapped mats)
+        split_used.txt
+        index_map.json
 """
 
 import argparse
@@ -139,8 +139,8 @@ def main():
             raise ValueError(f"Index out of range in {split_path}: min={min(idxs)}, max={max(idxs)}")
 
         dst_root = out_data_dir / split_name
-        dst_images = dst_root / "images"
-        dst_masks = dst_root / "masks"
+        dst_images = dst_root / "image"
+        dst_masks = dst_root / "mask"
         dst_npz = dst_root / "cameras_spe3r.npz"
 
         print(f"\n=== {split_name} | N={len(idxs)} | idx range [{min(idxs)}, {max(idxs)}] ===")
