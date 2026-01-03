@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
-Plot camera view selections (train / optional val) from SPE3R cameras_spe3r.npz + split txt files.
+Plot camera view selections from SPE3R cameras_spe3r.npz + split txt files.
 
-Usage examples:
-  python plot_views.py --npz /path/cameras_spe3r.npz --train /path/hst_black_mix_32.txt --prefix black
-  python plot_views.py --npz ... --train ... --val ... --prefix black --out plot.png
+Supports:
+- single selection: --train
+- dual selection:   --train_a + --train_b (one plot, two markers, two dashed orbits)
+Optional:
+- --val overlay
+
+Examples:
+  %run plot_views.py --npz ... --train ... --prefix black
+  %run plot_views.py --npz ... --train_a ... --train_b ... --prefix black --val ...
 """
 
 import os
@@ -18,7 +24,6 @@ import matplotlib.pyplot as plt
 # Utilities
 # -------------------------
 def camera_center_from_P_svd(P3x4: np.ndarray) -> np.ndarray:
-    """Camera center C from 3x4 projection matrix via nullspace (SVD)."""
     _, _, Vt = np.linalg.svd(P3x4)
     C_h = Vt[-1]
     if abs(C_h[-1]) > 1e-12:
@@ -26,35 +31,21 @@ def camera_center_from_P_svd(P3x4: np.ndarray) -> np.ndarray:
     return C_h[:3]
 
 
-def load_centers_and_dirs(npz_path: Path):
-    """Load camera centers and view directions from cameras_spe3r.npz."""
+def load_centers(npz_path: Path):
     data = np.load(str(npz_path), allow_pickle=True)
+    ids = sorted([int(k.split("_")[-1]) for k in data.keys() if k.startswith("world_mat_")])
 
-    ids = sorted(
-        [int(k.split("_")[-1]) for k in data.keys() if k.startswith("world_mat_")]
-    )
-
-    centers, vdirs = [], []
+    centers = []
     for i in ids:
         W = data[f"world_mat_{i}"]
         S = data[f"scale_mat_{i}"]
         P4 = W @ S
         P = P4[:3, :4].astype(np.float64)
-
-        C = camera_center_from_P_svd(P)
-        centers.append(C)
-
-        # Approx view direction: -R^T z_cam
-        R = P4[:3, :3].astype(np.float64)
-        v = -R.T @ np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        v = v / (np.linalg.norm(v) + 1e-12)
-        vdirs.append(v)
-
-    return np.array(ids, dtype=int), np.stack(centers), np.stack(vdirs)
+        centers.append(camera_center_from_P_svd(P))
+    return np.array(ids, dtype=int), np.stack(centers)
 
 
 def pca_plane_basis(X: np.ndarray):
-    """Return two principal directions spanning the best-fit plane."""
     _, _, Vt = np.linalg.svd(X, full_matrices=False)
     e1 = Vt[0] / (np.linalg.norm(Vt[0]) + 1e-12)
     e2 = Vt[1] / (np.linalg.norm(Vt[1]) + 1e-12)
@@ -62,7 +53,6 @@ def pca_plane_basis(X: np.ndarray):
 
 
 def nmc_points(k: int, delta_x: float, omega: float = 1.0):
-    """Parametric NMC ellipse-like orbit in (x,z)."""
     t = np.linspace(0, 2 * np.pi, k, endpoint=False)
     x = -(delta_x / 2.0) * np.cos(omega * t)
     z = (delta_x / 4.0) * np.sin(omega * t)
@@ -91,54 +81,51 @@ def subset_mask_from_prefix(ids_all: np.ndarray, prefix: str):
     raise ValueError(f"Unknown prefix '{prefix}'. Use black|earth|all.")
 
 
+def compute_orbit_from_centers(centers: np.ndarray, k_orbit: int = 64):
+    """
+    Build a 'desired orbit' reference curve by fitting PCA plane to provided centers,
+    then drawing the NMC ellipse-like curve on that plane using median radius.
+    """
+    target = centers.mean(axis=0)
+    X = centers - target
+    e1, e2 = pca_plane_basis(X)
+
+    r = np.linalg.norm(centers - target, axis=1)
+    delta_x = 2.0 * float(np.median(r))
+
+    x, z = nmc_points(k_orbit, delta_x, omega=1.0)
+    desired = target[None, :] + x[:, None] * e1[None, :] + z[:, None] * e2[None, :]
+    return target, desired
+
+
 # -------------------------
-# Plotting
+# Plot
 # -------------------------
-def plot_selection(
+def plot_single_or_dual(
     npz_path: Path,
-    train_txt: Path,
     prefix: str,
+    train_txt: Path | None = None,
+    train_a: Path | None = None,
+    train_b: Path | None = None,
     val_txt: Path | None = None,
     k_orbit: int = 64,
-    show_orbit: bool = True,
+    show_orbits: bool = True,
     out_path: Path | None = None,
     title: str | None = None,
 ):
-    # Load all cameras
-    ids_all, centers_all, _ = load_centers_and_dirs(npz_path)
-    id_to_idx_all = {int(i): j for j, i in enumerate(ids_all)}
+    ids_all, centers_all = load_centers(npz_path)
+    id_to_idx = {int(i): j for j, i in enumerate(ids_all)}
 
-    # Restrict to subset (black/earth/all) for background scatter + orbit basis
+    # Background subset
     mask = subset_mask_from_prefix(ids_all, prefix)
-    ids_sub = ids_all[mask]
     centers_sub = centers_all[mask]
 
-    # Target center + PCA plane for orbit reference
-    target = centers_sub.mean(axis=0)
-    X = centers_sub - target
-    e1, e2 = pca_plane_basis(X)
-
-    r = np.linalg.norm(centers_sub - target, axis=1)
-    delta_x = 2.0 * float(np.median(r))
-
-    desired_pos = None
-    if show_orbit:
-        x, z = nmc_points(k_orbit, delta_x, omega=1.0)
-        desired_pos = target[None, :] + x[:, None] * e1[None, :] + z[:, None] * e2[None, :]
-
-    # Load selections
-    train_vids = read_split_txt(train_txt)
-    train_centers = np.array([centers_all[id_to_idx_all[v]] for v in train_vids])
-
+    # Validation (optional)
     val_centers = None
     if val_txt is not None:
         val_vids = read_split_txt(val_txt)
-        overlap = set(train_vids) & set(val_vids)
-        if overlap:
-            print(f"[WARN] train/val overlap detected ({len(overlap)}). Example: {sorted(list(overlap))[:5]}")
-        val_centers = np.array([centers_all[id_to_idx_all[v]] for v in val_vids])
+        val_centers = np.array([centers_all[id_to_idx[v]] for v in val_vids])
 
-    # Plot
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection="3d")
 
@@ -147,32 +134,75 @@ def plot_selection(
         s=5, alpha=0.2, label="All camera centers"
     )
 
-    if desired_pos is not None:
-        ax.plot(
-            desired_pos[:, 0], desired_pos[:, 1], desired_pos[:, 2],
-            "k--", linewidth=2, label=f"Desired NMC orbit (k={k_orbit})"
-        )
+    # --- SINGLE mode ---
+    if train_txt is not None:
+        train_vids = read_split_txt(train_txt)
+        train_centers = np.array([centers_all[id_to_idx[v]] for v in train_vids])
 
-    ax.scatter(
-        train_centers[:, 0], train_centers[:, 1], train_centers[:, 2],
-        s=70, marker="^", label=f"Train ({len(train_centers)})"
-    )
+        # Orbit fitted on the selected centers (optional)
+        target, orbit = compute_orbit_from_centers(train_centers, k_orbit=k_orbit)
+        if show_orbits:
+            ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], "k--", linewidth=2, label=f"Orbit ref (k={k_orbit})")
 
-    if val_centers is not None:
-        ax.scatter(
-            val_centers[:, 0], val_centers[:, 1], val_centers[:, 2],
-            s=70, marker="o", label=f"Validation ({len(val_centers)})"
-        )
+        ax.scatter(train_centers[:, 0], train_centers[:, 1], train_centers[:, 2],
+                   s=70, marker="^", label=f"Train ({len(train_centers)})")
+        ax.scatter(target[0], target[1], target[2], c="red", s=110, marker="*", label="Target center")
 
-    ax.scatter(target[0], target[1], target[2], c="red", s=110, marker="*", label="Target center")
+        if val_centers is not None:
+            overlap = set(train_vids) & set(read_split_txt(val_txt))
+            if overlap:
+                print(f"[WARN] train/val overlap detected ({len(overlap)}). Example: {sorted(list(overlap))[:5]}")
+            ax.scatter(val_centers[:, 0], val_centers[:, 1], val_centers[:, 2],
+                       s=70, marker="o", label=f"Validation ({len(val_centers)})")
 
-    if title is None:
-        base = train_txt.stem
-        title = f"{prefix} — {base}"
-        if val_txt is not None:
-            title += " (+val overlay)"
+        if title is None:
+            title = f"{prefix} — {train_txt.stem}" + (" (+val)" if val_txt else "")
+
+    # --- DUAL mode ---
+    else:
+        if train_a is None or train_b is None:
+            raise ValueError("Dual mode requires --train_a and --train_b (or use --train for single mode).")
+
+        vids_a = read_split_txt(train_a)
+        vids_b = read_split_txt(train_b)
+
+        centers_a = np.array([centers_all[id_to_idx[v]] for v in vids_a])
+        centers_b = np.array([centers_all[id_to_idx[v]] for v in vids_b])
+
+        # Orbits fitted separately
+        target_a, orbit_a = compute_orbit_from_centers(centers_a, k_orbit=k_orbit)
+        target_b, orbit_b = compute_orbit_from_centers(centers_b, k_orbit=k_orbit)
+
+        if show_orbits:
+            ax.plot(orbit_a[:, 0], orbit_a[:, 1], orbit_a[:, 2], "k--", linewidth=2,
+                    label=f"Orbit A (k={k_orbit})")
+            ax.plot(orbit_b[:, 0], orbit_b[:, 1], orbit_b[:, 2], "k:", linewidth=2,
+                    label=f"Orbit B (k={k_orbit})")
+
+        ax.scatter(centers_a[:, 0], centers_a[:, 1], centers_a[:, 2],
+                   s=70, marker="^", label=f"A: {train_a.stem} ({len(centers_a)})")
+        ax.scatter(centers_b[:, 0], centers_b[:, 1], centers_b[:, 2],
+                   s=70, marker="s", label=f"B: {train_b.stem} ({len(centers_b)})")
+
+        ax.scatter(target_a[0], target_a[1], target_a[2], c="red", s=110, marker="*", label="Target A")
+        ax.scatter(target_b[0], target_b[1], target_b[2], c="red", s=90, marker="x", label="Target B")
+
+        if val_centers is not None:
+            val_vids = read_split_txt(val_txt)
+            overlap_a = set(vids_a) & set(val_vids)
+            overlap_b = set(vids_b) & set(val_vids)
+            if overlap_a:
+                print(f"[WARN] A/val overlap detected ({len(overlap_a)}). Example: {sorted(list(overlap_a))[:5]}")
+            if overlap_b:
+                print(f"[WARN] B/val overlap detected ({len(overlap_b)}). Example: {sorted(list(overlap_b))[:5]}")
+
+            ax.scatter(val_centers[:, 0], val_centers[:, 1], val_centers[:, 2],
+                       s=70, marker="o", label=f"Validation ({len(val_centers)})")
+
+        if title is None:
+            title = f"{prefix} — dual selection: {train_a.stem} + {train_b.stem}" + (" (+val)" if val_txt else "")
+
     ax.set_title(title)
-
     ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
     ax.legend()
     ax.set_box_aspect([1, 1, 1])
@@ -181,7 +211,7 @@ def plot_selection(
     if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(str(out_path), dpi=200, bbox_inches="tight")
-        print(f"[OK] saved figure to: {out_path}")
+        print(f"[OK] saved: {out_path}")
     else:
         plt.show()
 
@@ -192,25 +222,45 @@ def plot_selection(
 # CLI
 # -------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Plot camera selections from split txt files.")
-    parser.add_argument("--npz", type=str, required=True, help="Path to cameras_spe3r.npz")
-    parser.add_argument("--train", type=str, required=True, help="Path to train split .txt")
-    parser.add_argument("--prefix", type=str, default="black", help="black | earth | all (for background subset)")
-    parser.add_argument("--val", type=str, default=None, help="Optional path to val split .txt (overlay)")
-    parser.add_argument("--k_orbit", type=int, default=64, help="Number of points to draw desired NMC orbit")
-    parser.add_argument("--no_orbit", action="store_true", help="Disable desired orbit overlay")
-    parser.add_argument("--out", type=str, default=None, help="If provided, save figure instead of showing")
-    parser.add_argument("--title", type=str, default=None, help="Optional custom plot title")
+    p = argparse.ArgumentParser(description="Plot view selections (single or dual txt).")
+    p.add_argument("--npz", type=str, required=True, help="Path to cameras_spe3r.npz")
+    p.add_argument("--prefix", type=str, default="black", help="black | earth | all")
 
-    args = parser.parse_args()
+    # Single mode
+    p.add_argument("--train", type=str, default=None, help="Single train split txt")
 
-    plot_selection(
+    # Dual mode
+    p.add_argument("--train_a", type=str, default=None, help="Train split A txt")
+    p.add_argument("--train_b", type=str, default=None, help="Train split B txt")
+
+    # Optional validation overlay
+    p.add_argument("--val", type=str, default=None, help="Optional validation split txt")
+
+    p.add_argument("--k_orbit", type=int, default=64, help="Points used to draw orbit reference")
+    p.add_argument("--no_orbits", action="store_true", help="Disable orbit overlays")
+    p.add_argument("--out", type=str, default=None, help="Save figure to this path instead of showing")
+    p.add_argument("--title", type=str, default=None, help="Custom title")
+
+    args = p.parse_args()
+
+    # Enforce: either single or dual
+    single = args.train is not None
+    dual = (args.train_a is not None) or (args.train_b is not None)
+
+    if single and dual:
+        raise ValueError("Use either --train OR (--train_a and --train_b), not both.")
+    if not single and not (args.train_a and args.train_b):
+        raise ValueError("Provide --train (single) OR both --train_a and --train_b (dual).")
+
+    plot_single_or_dual(
         npz_path=Path(args.npz),
-        train_txt=Path(args.train),
         prefix=args.prefix,
+        train_txt=(Path(args.train) if args.train else None),
+        train_a=(Path(args.train_a) if args.train_a else None),
+        train_b=(Path(args.train_b) if args.train_b else None),
         val_txt=(Path(args.val) if args.val else None),
         k_orbit=args.k_orbit,
-        show_orbit=(not args.no_orbit),
+        show_orbits=(not args.no_orbits),
         out_path=(Path(args.out) if args.out else None),
         title=args.title,
     )
