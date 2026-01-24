@@ -234,7 +234,7 @@ def main():
 
     # exclude_ids = empty in train mode --> no effect
     # exclude_ids = non-empty in val mode --> skip those ids
-    
+
     for k in range(K_SELECT):
         idxs_in_bin = np.where(bin_id == k)[0]
         if idxs_in_bin.size == 0:
@@ -318,6 +318,32 @@ def main():
 
     plt.tight_layout()
     plt.show()
+
+    # ------------------------------------------------
+    # Plot 2D in the orbit plane (u-v coordinates)
+    # ------------------------------------------------
+    tt = np.linspace(0.0, 2.0*np.pi, K_ORBIT_SAMPLES, endpoint=False)
+    circle_uv = np.stack([r0*np.cos(tt), r0*np.sin(tt)], axis=1)
+
+    plt.figure(figsize=(7, 6))
+    plt.scatter(pu, pv, s=8, alpha=0.15, label="All cameras (orbit plane)")
+    plt.plot(circle_uv[:, 0], circle_uv[:, 1], linewidth=2, alpha=0.9,
+             label="Reference orbit (u-v)")
+    if len(selected_indices) > 0:
+        plt.scatter(pu[selected_indices], pv[selected_indices],
+                    s=50, alpha=0.95,
+                    label="Selected (train)" if args.mode == "train" else "Selected (val)")
+    plt.scatter([0], [0], s=120, marker="*", label="Target (origin)")
+
+    plt.gca().set_aspect("equal", adjustable="box")
+    plt.xlabel("u (orbit plane)")
+    plt.ylabel("v (orbit plane)")
+    plt.title(f"Orbit-plane projection (tilt={tilt_deg:g}°)")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
 
 
 if __name__ == "__main__":
