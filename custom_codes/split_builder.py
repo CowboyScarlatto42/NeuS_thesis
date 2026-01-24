@@ -76,8 +76,8 @@ def main():
     splits_dir = Path(args.splits_dir)
     out_data_dir = Path(args.out_data_dir)
 
-    src_images = src_dataset / "images"
-    src_masks = src_dataset / "masks"
+    src_images = src_dataset / "image"
+    src_masks = src_dataset / "mask"
     src_npz = src_dataset / "cameras_spe3r.npz"
 
     if not src_images.exists() or not src_masks.exists() or not src_npz.exists():
