@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 
 # ============================================================
-# Mesh utilities (loading, cleaning, sampling)
+# Mesh utilities (version-safe)
 # ============================================================
 def clean_mesh(m: trimesh.Trimesh) -> trimesh.Trimesh:
     if hasattr(m, "remove_infinite_values"):
@@ -62,7 +62,18 @@ def print_stats(title: str, s: dict):
         print(f"  {k:>8s}: {v:.6e}")
 
 
-def plot_histogram(d, title, xlabel, save_path=None, n_bins=100):
+def plot_histogram_fraction(
+    d: np.ndarray,
+    title: str,
+    xlabel: str,
+    save_path: Path | None = None,
+    n_bins: int = 100,
+):
+    """
+    Histogram where each bar height is the fraction of points in that bin.
+    Sum of bar heights (weighted by bin membership) equals 1.
+    This matches the interpretation: "this bar contains X% of the points".
+    """
     d = d[np.isfinite(d)]
     d = d[d > 0]
     if d.size == 0:
@@ -71,13 +82,17 @@ def plot_histogram(d, title, xlabel, save_path=None, n_bins=100):
 
     bins = np.logspace(np.log10(d.min()), np.log10(d.max()), n_bins)
 
+    weights = np.ones_like(d) / len(d)
+
     plt.figure(figsize=(7, 5))
-    plt.hist(d, bins=bins, density=True, alpha=0.75)
+    plt.hist(d, bins=bins, weights=weights, alpha=0.75)
+
     plt.axvline(np.median(d), color="black", linestyle="--", label="median")
     plt.axvline(np.quantile(d, 0.95), color="red", linestyle="--", label="p95")
+
     plt.xscale("log")
     plt.xlabel(xlabel)
-    plt.ylabel("Probability density")
+    plt.ylabel("Fraction of points")
     plt.title(title)
     plt.legend()
     plt.tight_layout()
@@ -105,37 +120,42 @@ def load_cameras(npz_path: Path):
 
 
 def focal_from_world_mat(world_mat: np.ndarray) -> float:
-    # world_mat ≈ K [R|t]
+    # NeuS convention: world_mat ≈ K [R|t]
     K = world_mat[:3, :3]
     fx = np.linalg.norm(K[0, :])
     fy = np.linalg.norm(K[1, :])
     return 0.5 * (fx + fy)
 
 
-def depths_for_points(points_world, world_mat, scale_mat):
+def depths_for_points(points_world: np.ndarray, world_mat: np.ndarray, scale_mat: np.ndarray) -> np.ndarray:
     N = points_world.shape[0]
-    Xh = np.concatenate([points_world, np.ones((N, 1))], axis=1)
+    Xh = np.concatenate([points_world, np.ones((N, 1))], axis=1)  # (N,4)
     M = world_mat @ scale_mat
     Xc = (M @ Xh.T).T
     return Xc[:, 2]
 
 
-def pixel_errors_from_3d(points_world, d_3d, world_mats, scale_mats, z_min=1e-6):
-    V = len(world_mats)
-    N = points_world.shape[0]
-
-    focals = np.array([focal_from_world_mat(W) for W in world_mats])
+def pixel_errors_from_3d(
+    points_world: np.ndarray,
+    d_3d: np.ndarray,
+    world_mats,
+    scale_mats,
+    z_min: float = 1e-6,
+) -> np.ndarray:
+    """
+    Option B: approximate pixel error e ≈ (f/Z) * d_3d, aggregated with median across valid views.
+    Returns per-point pixel error; points invalid in all views become NaN.
+    """
+    focals = np.array([focal_from_world_mat(W) for W in world_mats], dtype=np.float64)
 
     Z = np.stack(
-        [depths_for_points(points_world, W, S)
-         for W, S in zip(world_mats, scale_mats)],
+        [depths_for_points(points_world, W, S) for W, S in zip(world_mats, scale_mats)],
         axis=0
     )  # (V, N)
 
     valid = Z > z_min
     E = (focals[:, None] / np.where(valid, Z, np.nan)) * d_3d[None, :]
-    e_med = np.nanmedian(E, axis=0)
-    return e_med
+    return np.nanmedian(E, axis=0)
 
 
 # ============================================================
@@ -147,10 +167,17 @@ def main():
     ap.add_argument("--gt_mesh", type=Path, required=True)
     ap.add_argument("--n", type=int, default=100_000)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--out_dir", type=Path, default=None)
-    ap.add_argument("--cameras_npz", type=Path, default=None)
-    ap.add_argument("--px_thresh", type=float, default=1.0)
-    ap.add_argument("--z_min", type=float, default=1e-6)
+
+    ap.add_argument("--out_dir", type=Path, default=None,
+                    help="If provided, save .npy arrays, stats.json and histogram PNGs")
+
+    ap.add_argument("--cameras_npz", type=Path, default=None,
+                    help="If provided, compute pixel metrics (Option B) using this cameras_*.npz")
+    ap.add_argument("--px_thresh", type=float, default=1.0,
+                    help="Threshold in pixels for 'fraction within px' metric")
+    ap.add_argument("--z_min", type=float, default=1e-6,
+                    help="Minimum positive depth to consider a view valid")
+
     args = ap.parse_args()
 
     if args.out_dir is not None:
@@ -166,13 +193,13 @@ def main():
     G = sample_surface(gt, args.n, seed=args.seed + 1)
 
     # --------------------
-    # 3D Chamfer
+    # 3D Chamfer (linear distances)
     # --------------------
     treeG = cKDTree(G)
-    dP, _ = treeG.query(P, k=1, workers=-1)
+    dP, _ = treeG.query(P, k=1, workers=-1)  # pred -> gt
 
     treeP = cKDTree(P)
-    dG, _ = treeP.query(G, k=1, workers=-1)
+    dG, _ = treeP.query(G, k=1, workers=-1)  # gt -> pred
 
     sP = stats(dP)
     sG = stats(dG)
@@ -182,20 +209,21 @@ def main():
     print_stats("GT → Pred statistics (3D)", sG)
     print(f"\nSymmetric Chamfer (mean, 3D): {chamfer_sym:.6e}")
 
-    plot_histogram(
+    # Plot 3D histograms (fraction-of-points)
+    plot_histogram_fraction(
         dP,
         "Chamfer distribution (pred → gt)",
         xlabel="Distance (NeuS normalized units)",
         save_path=(args.out_dir / "hist_pred_to_gt.png" if args.out_dir else None),
     )
-    plot_histogram(
+    plot_histogram_fraction(
         dG,
         "Chamfer distribution (gt → pred)",
         xlabel="Distance (NeuS normalized units)",
         save_path=(args.out_dir / "hist_gt_to_pred.png" if args.out_dir else None),
     )
 
-    # save 3D outputs
+    payload = None
     if args.out_dir is not None:
         np.save(args.out_dir / "pred_to_gt.npy", dP)
         np.save(args.out_dir / "gt_to_pred.npy", dG)
@@ -206,18 +234,17 @@ def main():
             "n": args.n,
             "seed": args.seed,
         }
-    else:
-        payload = None
 
     # --------------------
-    # Pixel metrics
+    # Pixel metrics (Option B)
     # --------------------
     if args.cameras_npz is not None:
         world_mats, scale_mats = load_cameras(args.cameras_npz)
 
-        eP = pixel_errors_from_3d(P, dP, world_mats, scale_mats, args.z_min)
-        eG = pixel_errors_from_3d(G, dG, world_mats, scale_mats, args.z_min)
+        eP = pixel_errors_from_3d(P, dP, world_mats, scale_mats, z_min=args.z_min)  # pred->gt px
+        eG = pixel_errors_from_3d(G, dG, world_mats, scale_mats, z_min=args.z_min)  # gt->pred px
 
+        # Drop NaNs: points not valid in any view
         eP = eP[np.isfinite(eP)]
         eG = eG[np.isfinite(eG)]
 
@@ -232,15 +259,16 @@ def main():
         print(f"\nFraction ≤ {args.px_thresh:.2f} px (pred→gt): {100*fracP:.2f}%")
         print(f"Fraction ≤ {args.px_thresh:.2f} px (gt→pred): {100*fracG:.2f}%")
 
-        plot_histogram(
+        # Plot pixel histograms (fraction-of-points)
+        plot_histogram_fraction(
             eP,
-            f"Pixel error distribution (pred → gt)",
+            "Pixel error distribution (pred → gt)",
             xlabel="Pixel error [px]",
             save_path=(args.out_dir / "hist_pred_to_gt_px.png" if args.out_dir else None),
         )
-        plot_histogram(
+        plot_histogram_fraction(
             eG,
-            f"Pixel error distribution (gt → pred)",
+            "Pixel error distribution (gt → pred)",
             xlabel="Pixel error [px]",
             save_path=(args.out_dir / "hist_gt_to_pred_px.png" if args.out_dir else None),
         )
