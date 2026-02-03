@@ -10,13 +10,43 @@ import matplotlib.pyplot as plt
 # -----------------------------
 # Mesh utilities
 # -----------------------------
+def clean_mesh(m: trimesh.Trimesh) -> trimesh.Trimesh:
+    """
+    Conservative cleaning that works across trimesh versions.
+    Avoids methods that may not exist (e.g., remove_degenerate_faces).
+    """
+    if not isinstance(m, trimesh.Trimesh):
+        raise TypeError("clean_mesh expects a trimesh.Trimesh")
+
+    # Basic safety cleanup
+    if hasattr(m, "remove_infinite_values"):
+        m.remove_infinite_values()
+
+    if hasattr(m, "remove_unreferenced_vertices"):
+        m.remove_unreferenced_vertices()
+
+    if hasattr(m, "remove_duplicate_faces"):
+        m.remove_duplicate_faces()
+
+    # Remove degenerate (near-zero-area) faces in a version-independent way
+    if hasattr(m, "area_faces") and hasattr(m, "update_faces"):
+        # Threshold is scale-dependent; this is tiny and mainly removes true degenerates.
+        mask = m.area_faces > 1e-16
+        if mask.shape[0] == len(m.faces) and np.any(~mask):
+            m.update_faces(mask)
+            if hasattr(m, "remove_unreferenced_vertices"):
+                m.remove_unreferenced_vertices()
+
+    return m
+
+
 def load_mesh(path: Path) -> trimesh.Trimesh:
     m = trimesh.load(path, force="mesh")
     if isinstance(m, trimesh.Scene):
         m = trimesh.util.concatenate(tuple(m.geometry.values()))
-    m.remove_unreferenced_vertices()
-    m.remove_degenerate_faces()
-    return m
+    if not isinstance(m, trimesh.Trimesh):
+        raise TypeError(f"Could not load a mesh from {path}")
+    return clean_mesh(m)
 
 
 def sample_surface(mesh: trimesh.Trimesh, n: int, seed: int) -> np.ndarray:
@@ -45,7 +75,7 @@ def print_stats(title: str, s: dict):
 
 
 # -----------------------------
-# Histogram (paper-ready)
+# Histogram plotting
 # -----------------------------
 def plot_histogram(
     d: np.ndarray,
@@ -53,13 +83,15 @@ def plot_histogram(
     save_path: Path | None = None,
     n_bins: int = 100,
 ):
-    d = d[d > 0]  # safety for log-scale
+    # Avoid log(0): if you have exact zeros, drop them
+    d = d[np.isfinite(d)]
+    d = d[d > 0]
 
-    bins = np.logspace(
-        np.log10(d.min()),
-        np.log10(d.max()),
-        n_bins
-    )
+    if d.size == 0:
+        print(f"[WARN] No positive finite distances to plot for: {title}")
+        return
+
+    bins = np.logspace(np.log10(d.min()), np.log10(d.max()), n_bins)
 
     plt.figure(figsize=(7, 5))
     plt.hist(d, bins=bins, density=True, alpha=0.75)
@@ -145,25 +177,17 @@ def main():
                 indent=2,
             )
 
-    # histograms (always shown, optionally saved)
+    # histograms
     plot_histogram(
         dP,
         "Chamfer distribution (pred → gt)",
-        save_path=(
-            args.out_dir / "hist_pred_to_gt.png"
-            if args.out_dir is not None
-            else None
-        ),
+        save_path=(args.out_dir / "hist_pred_to_gt.png" if args.out_dir is not None else None),
     )
 
     plot_histogram(
         dG,
         "Chamfer distribution (gt → pred)",
-        save_path=(
-            args.out_dir / "hist_gt_to_pred.png"
-            if args.out_dir is not None
-            else None
-        ),
+        save_path=(args.out_dir / "hist_gt_to_pred.png" if args.out_dir is not None else None),
     )
 
 
