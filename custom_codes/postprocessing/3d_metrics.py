@@ -100,7 +100,7 @@ def plot_histogram(
     plt.axvline(np.quantile(d, 0.95), color="red", linestyle="--", label="p95")
 
     plt.xscale("log")
-    plt.xlabel("Distance [m]")
+    plt.xlabel("Distance (NeuS normalized units)")
     plt.ylabel("Probability density")
     plt.title(title)
     plt.legend()
