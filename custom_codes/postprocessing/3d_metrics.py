@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 
 # ============================================================
-# Mesh utilities (version-safe)
+# Mesh utilities (loading, cleaning, sampling)
 # ============================================================
 def clean_mesh(m: trimesh.Trimesh) -> trimesh.Trimesh:
     if hasattr(m, "remove_infinite_values"):
@@ -18,7 +18,7 @@ def clean_mesh(m: trimesh.Trimesh) -> trimesh.Trimesh:
     if hasattr(m, "remove_duplicate_faces"):
         m.remove_duplicate_faces()
 
-    # remove near-degenerate faces (version-independent)
+    # remove near-degenerate faces
     if hasattr(m, "area_faces") and hasattr(m, "update_faces"):
         mask = m.area_faces > 1e-16
         if mask.shape[0] == len(m.faces) and np.any(~mask):
@@ -69,11 +69,6 @@ def plot_histogram_fraction(
     save_path: Path | None = None,
     n_bins: int = 100,
 ):
-    """
-    Histogram where each bar height is the fraction of points in that bin.
-    Sum of bar heights (weighted by bin membership) equals 1.
-    This matches the interpretation: "this bar contains X% of the points".
-    """
     d = d[np.isfinite(d)]
     d = d[d > 0]
     if d.size == 0:
@@ -142,10 +137,6 @@ def pixel_errors_from_3d(
     scale_mats,
     z_min: float = 1e-6,
 ) -> np.ndarray:
-    """
-    Option B: approximate pixel error e ≈ (f/Z) * d_3d, aggregated with median across valid views.
-    Returns per-point pixel error; points invalid in all views become NaN.
-    """
     focals = np.array([focal_from_world_mat(W) for W in world_mats], dtype=np.float64)
 
     Z = np.stack(
@@ -212,13 +203,13 @@ def main():
     # Plot 3D histograms (fraction-of-points)
     plot_histogram_fraction(
         dP,
-        "Chamfer distribution (pred → gt)",
+        "Distance error distribution (pred → gt)",
         xlabel="Distance (NeuS normalized units)",
         save_path=(args.out_dir / "hist_pred_to_gt.png" if args.out_dir else None),
     )
     plot_histogram_fraction(
         dG,
-        "Chamfer distribution (gt → pred)",
+        "Distance error distribution (gt → pred)",
         xlabel="Distance (NeuS normalized units)",
         save_path=(args.out_dir / "hist_gt_to_pred.png" if args.out_dir else None),
     )
