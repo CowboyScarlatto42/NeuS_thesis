@@ -17,6 +17,7 @@ Selection:
 Output:
 - Writes selected image filenames (e.g., 000123.png) to a .txt file.
 - Plots at screen: all cameras + tilted orbit + selected views + origin.
+
 """
 
 import os
@@ -70,6 +71,18 @@ def read_train_ids(train_txt: str) -> set:
     return train_ids
 
 
+def read_many_train_ids(train_txt_list) -> set:
+    """Union of ids from multiple txt files."""
+    exclude = set()
+    for p in train_txt_list:
+        if p is None:
+            continue
+        if not os.path.isfile(p):
+            raise FileNotFoundError(f"--train_txt file not found: {p}")
+        exclude.update(read_train_ids(p))
+    return exclude
+
+
 def orbit_frame_from_tilt_x(tilt_deg: float):
     """
     Build orbit frame (u, v, n) by rotating the equatorial plane about X axis.
@@ -119,23 +132,45 @@ def select_validation_from_bin(
 # -------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, choices=["train", "val"], required=True,
-                        help="train: build training split; val: build validation split (excludes --train_txt ids)")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["train", "val"],
+        required=True,
+        help="train: build training split; val: build validation split (excludes --train_txt ids)"
+    )
     parser.add_argument("--labels_json", type=str, required=True, help="Path to labels.json")
-    parser.add_argument("--split", type=str, choices=["black", "earth"], required=True,
-                        help="black: use idx 0..499, earth: use idx 500..999")
+    parser.add_argument(
+        "--split",
+        type=str,
+        choices=["black", "earth"],
+        required=True,
+        help="black: use idx 0..499, earth: use idx 500..999"
+    )
     parser.add_argument("--views_counter", type=int, required=True, help="Number of azimuth sectors (K_SELECT)")
     parser.add_argument("--orbit_samples", type=int, default=256, help="K_ORBIT_SAMPLES for plotting/orbit discretization")
     parser.add_argument("--tilt_deg", type=float, required=True, help="Orbit plane tilt angle in degrees (about X_T)")
-    parser.add_argument("--train_txt", type=str, default=None,
-                        help="(val mode only) training views txt (000123.png per line) to exclude")
+
+    # NEW: repeatable train_txt
+    parser.add_argument(
+        "--train_txt",
+        type=str,
+        action="append",
+        default=[],
+        help="(val mode only) training views txt to exclude. Can be repeated: --train_txt a.txt --train_txt b.txt"
+    )
+
     parser.add_argument("--out_dir", type=str, required=True, help="Directory where output txt will be saved")
-    parser.add_argument("--out_name", type=str, default=None,
-                        help="Optional output filename (default depends on mode)")
+    parser.add_argument(
+        "--out_name",
+        type=str,
+        default=None,
+        help="Optional output filename (default depends on mode)"
+    )
     args = parser.parse_args()
 
-    if args.mode == "val" and not args.train_txt:
-        raise ValueError("--train_txt is required when --mode val")
+    if args.mode == "val" and len(args.train_txt) == 0:
+        raise ValueError("--train_txt is required when --mode val (can be repeated)")
 
     # Split config
     if args.split == "black":
@@ -162,12 +197,17 @@ def main():
     # Exclusions (only for val mode)
     exclude_ids = set()
     if args.mode == "val":
-        exclude_ids = read_train_ids(args.train_txt)
-        print(f"[INFO] loaded {len(exclude_ids)} training ids from: {args.train_txt}")
+        exclude_ids = read_many_train_ids(args.train_txt)
+        print(f"[INFO] loaded {len(exclude_ids)} unique training ids from {len(args.train_txt)} txt files:")
+        for p in args.train_txt:
+            print(f"  - {p}")
     else:
         print("[INFO] mode=train (no exclusions)")
 
     # ---- load labels ----
+    if not os.path.isfile(args.labels_json):
+        raise FileNotFoundError(f"labels_json not found: {args.labels_json}")
+
     with open(args.labels_json, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -214,7 +254,7 @@ def main():
     # distance metric: radial-to-circle in plane + out-of-plane distance
     dists = np.sqrt((rad_uv - r0)**2 + pn**2)
 
-    # Oribit division into K_SELECT azimuth sectors
+    # Orbit division into K_SELECT azimuth sectors
     az = np.arctan2(pv, pu)                 # (-pi, pi]
     az = (az + 2*np.pi) % (2*np.pi)         # [0, 2pi)
     bin_id = np.floor(K_SELECT * az / (2*np.pi)).astype(int)
@@ -231,9 +271,6 @@ def main():
     # ------------------------------------------------
     selected_indices = []
     empty_after_exclusion = []
-
-    # exclude_ids = empty in train mode --> no effect
-    # exclude_ids = non-empty in val mode --> skip those ids
 
     for k in range(K_SELECT):
         idxs_in_bin = np.where(bin_id == k)[0]
@@ -257,7 +294,7 @@ def main():
     selected_ids = ids[selected_indices]
 
     if args.mode == "val":
-        print(f"[INFO] excluded ids (from train_txt): {len(exclude_ids)}")
+        print(f"[INFO] excluded ids total: {len(exclude_ids)}")
     print(f"[INFO] selected {len(selected_indices)}/{K_SELECT} bins (1 per non-empty bin after exclusion)")
     if empty_after_exclusion:
         print(f"[INFO] Empty sectors AFTER exclusion ({len(empty_after_exclusion)}): {empty_after_exclusion}")
@@ -295,8 +332,8 @@ def main():
     # ------------------------------------------------
     # Plot tilted orbit + selected views
     # ------------------------------------------------
-    t = np.linspace(0.0, 2.0*np.pi, K_ORBIT_SAMPLES, endpoint=False)
-    orbit = (r0 * np.cos(t))[:, None] * u[None, :] + (r0 * np.sin(t))[:, None] * v[None, :]
+    tt = np.linspace(0.0, 2.0*np.pi, K_ORBIT_SAMPLES, endpoint=False)
+    orbit = (r0 * np.cos(tt))[:, None] * u[None, :] + (r0 * np.sin(tt))[:, None] * v[None, :]
 
     selected_pts = pT_C[selected_indices] if len(selected_indices) > 0 else np.zeros((0, 3), dtype=np.float64)
 
@@ -305,8 +342,11 @@ def main():
 
     ax.scatter(pT_C[:, 0], pT_C[:, 1], pT_C[:, 2], s=8, alpha=0.15, label="All cameras (target frame)")
     ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], linewidth=2, alpha=0.9, label=f"Tilted orbit (tilt={tilt_deg:g}°)")
-    ax.scatter(selected_pts[:, 0], selected_pts[:, 1], selected_pts[:, 2], s=50, alpha=0.95,
-               label="Selected (train)" if args.mode == "train" else "Selected (val)")
+    ax.scatter(
+        selected_pts[:, 0], selected_pts[:, 1], selected_pts[:, 2],
+        s=50, alpha=0.95,
+        label="Selected (train)" if args.mode == "train" else "Selected (val)"
+    )
     ax.scatter([0], [0], [0], s=100, marker="*", label="Target (origin)")
 
     ax.set_title(f"Selection ({args.mode}): tilted orbit + azimuth sectors (orbit plane)")
@@ -322,17 +362,17 @@ def main():
     # ------------------------------------------------
     # Plot 2D in the orbit plane (u-v coordinates)
     # ------------------------------------------------
-    tt = np.linspace(0.0, 2.0*np.pi, K_ORBIT_SAMPLES, endpoint=False)
     circle_uv = np.stack([r0*np.cos(tt), r0*np.sin(tt)], axis=1)
 
     plt.figure(figsize=(7, 6))
     plt.scatter(pu, pv, s=8, alpha=0.15, label="All cameras (orbit plane)")
-    plt.plot(circle_uv[:, 0], circle_uv[:, 1], linewidth=2, alpha=0.9,
-             label="Reference orbit (u-v)")
+    plt.plot(circle_uv[:, 0], circle_uv[:, 1], linewidth=2, alpha=0.9, label="Reference orbit (u-v)")
     if len(selected_indices) > 0:
-        plt.scatter(pu[selected_indices], pv[selected_indices],
-                    s=50, alpha=0.95,
-                    label="Selected (train)" if args.mode == "train" else "Selected (val)")
+        plt.scatter(
+            pu[selected_indices], pv[selected_indices],
+            s=50, alpha=0.95,
+            label="Selected (train)" if args.mode == "train" else "Selected (val)"
+        )
     plt.scatter([0], [0], s=120, marker="*", label="Target (origin)")
 
     plt.gca().set_aspect("equal", adjustable="box")
@@ -343,7 +383,6 @@ def main():
     plt.legend()
     plt.tight_layout()
     plt.show()
-
 
 
 if __name__ == "__main__":
