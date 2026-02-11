@@ -62,10 +62,9 @@ def main():
         if "orig_index" not in row:
             raise RuntimeError("index_map must contain 'orig_index' for this script")
 
-        orig0 = int(row["orig_index"])     # 0-based
-        new0 = int(row["new_index"])      # 0-based
-
-        orig1 = orig0 + 1                 # convert to labels indexing
+        orig0 = int(row["orig_index"])   # orig_index is 0-based, convert to 1-based
+        new0 = int(row["new_index"])      
+        orig1 = orig0 + 1
         orig1_to_new0[orig1] = new0
 
     subset: List[dict] = []
