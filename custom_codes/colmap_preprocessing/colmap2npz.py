@@ -13,7 +13,9 @@ Questo script:
    - sparse/0, sparse_txt, database.db, ecc. (dal WORK_DIR)
    - images/ + masks/ SOLO delle immagini registrate
 3) FIX CRITICO: riordina+rinomina OUT_DIR/images e OUT_DIR/masks in ordine images.bin -> 000.png..
+   + Scrive OUT_DIR/index_map.json e OUT_DIR/index_map.txt con la mappa (new -> orig)
 4) Lancia gli script ORIGINALI NeuS preprocess (imgs2poses.py + gen_cameras.py) su OUT_DIR
+   - Se serve, crea sparse_points_interest.ply COPIANDO sparse_points.ply (no symlink su Drive)
    -> genera OUT_DIR/preprocessed/cameras_sphere.npz coerente con preprocessed/image/000.png..
 
 Uso (Colab):
@@ -31,6 +33,7 @@ import shutil
 import struct
 import argparse
 import subprocess
+import json
 from pathlib import Path
 from typing import List, Optional
 
@@ -131,6 +134,7 @@ def parse_registered_names_from_images_txt(images_txt: Path) -> List[str]:
 
 # ----------------------------
 # CRITICAL FIX: reorder/rename by images.bin order
+# + write mapping files
 # ----------------------------
 def reorder_and_rename_by_images_bin(
     src_images_dir: Path,
@@ -154,23 +158,41 @@ def reorder_and_rename_by_images_bin(
         if p.is_file():
             p.unlink()
 
+    mapping = []
+
     missing_masks = 0
     for i, name in enumerate(order):
         src = src_images_dir / name
         if not src.exists():
             raise FileNotFoundError(f"images.bin references {name} but missing in {src_images_dir}")
 
-        # NeuS naming convention: 000.png.. (3 digits)
-        dst_img = dst_images_dir / f"{i:03d}.png"
+        new_name = f"{i:03d}.png"
+        dst_img = dst_images_dir / new_name
         shutil.copy2(src, dst_img)
+
+        row = {"new_index": i, "new_name": new_name, "orig_name": name}
+        try:
+            row["orig_index"] = int(Path(name).stem)
+        except Exception:
+            pass
+        mapping.append(row)
 
         m = src_masks_dir / name
         if m.exists():
-            shutil.copy2(m, dst_masks_dir / f"{i:03d}.png")
+            shutil.copy2(m, dst_masks_dir / new_name)
         else:
             missing_masks += 1
 
     print(f"[RENAME] wrote {len(order)} images as 000.. | missing masks for {missing_masks} images")
+
+    out_dir = dst_images_dir.parent
+    (out_dir / "index_map.json").write_text(json.dumps(mapping, indent=2), encoding="utf-8")
+    (out_dir / "index_map.txt").write_text(
+        "\n".join([f'{m["new_name"]} {m["orig_name"]}' for m in mapping]) + "\n",
+        encoding="utf-8",
+    )
+    print("[MAP] wrote:", out_dir / "index_map.json")
+    print("[MAP] wrote:", out_dir / "index_map.txt")
 
 
 # ----------------------------
@@ -185,7 +207,7 @@ def main():
     ap.add_argument("--neus_repo", type=Path, default=Path("/content/NeuS_thesis"))
     ap.add_argument("--match_type", type=str, default="exhaustive_matcher")
 
-    # COLMAP knobs (stessa filosofia delle celle)
+    # COLMAP knobs
     ap.add_argument("--single_camera", type=int, default=1)
     ap.add_argument("--camera_model", type=str, default="SIMPLE_RADIAL")
     ap.add_argument("--use_gpu", type=int, default=0)
@@ -197,7 +219,6 @@ def main():
     ensure_colmap_installed()
     env = headless_env()
 
-    # validate input structure
     work_images = args.work_dir / "images"
     work_masks = args.work_dir / "masks"
     if not work_images.is_dir():
@@ -297,7 +318,6 @@ def main():
         shutil.rmtree(args.out_dir)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy all COLMAP artifacts from WORK_DIR except images/masks
     for item in args.work_dir.iterdir():
         if item.name in ("images", "masks"):
             continue
@@ -329,7 +349,7 @@ def main():
     print(f"[OUT COPY] copied registered images={len(reg_names)-missing_imgs} | missing_imgs={missing_imgs} | missing_masks={missing_masks}")
 
     # ------------------------------------------------------------------
-    # 3) CRITICAL FIX: reorder+rename OUT_DIR images/masks by OUT_DIR sparse/0/images.bin
+    # 3) reorder+rename by OUT_DIR sparse/0/images.bin + write index_map
     # ------------------------------------------------------------------
     images_bin = args.out_dir / "sparse" / "0" / "images.bin"
     if not images_bin.exists():
@@ -357,7 +377,7 @@ def main():
     shutil.rmtree(tmp_masks)
 
     # ------------------------------------------------------------------
-    # 4) Run NeuS preprocess scripts (UNCHANGED)
+    # 4) Run NeuS preprocess scripts (UNCHANGED) + your "second cell" logic
     # ------------------------------------------------------------------
     colmap_prep = args.neus_repo / "preprocess_custom_data" / "colmap_preprocess"
     imgs2poses = colmap_prep / "imgs2poses.py"
@@ -371,16 +391,23 @@ def main():
     run(["python", str(imgs2poses), str(args.out_dir), "--match_type", args.match_type],
         env=env, cwd=str(colmap_prep))
 
-    # gen_cameras expects sparse_points_interest.ply sometimes
+    # === integrate your second cell ===
     ply_raw = args.out_dir / "sparse_points.ply"
     ply_int = args.out_dir / "sparse_points_interest.ply"
-    if ply_raw.exists() and not ply_int.exists():
-        try:
-            ply_int.symlink_to(ply_raw.name)
-        except Exception:
-            shutil.copy2(ply_raw, ply_int)
 
-    run(["python", str(gen_cameras), str(args.out_dir)], env=env)
+    print("\n[POST] OUT_DIR  =", args.out_dir)
+    print("[POST] PLY_RAW  =", ply_raw)
+    print("[POST] PLY_INT  =", ply_int)
+
+    if not ply_raw.exists():
+        raise RuntimeError(f"❌ Missing {ply_raw}. imgs2poses did not write sparse_points.ply")
+
+    # NO symlink on Drive: copy
+    shutil.copy2(ply_raw, ply_int)
+    print(f"✔ Created: {ply_int} (copied from sparse_points.ply)")
+
+    # Now rerun gen_cameras
+    run(["python", str(gen_cameras), str(args.out_dir)], env=env, cwd=str(colmap_prep))
 
     # ------------------------------------------------------------------
     # 5) Final checks
@@ -408,6 +435,7 @@ def main():
     print("preprocessed images:", len(imgs))
     print("npz world_mat_*    :", len(wm))
     print("NPZ path:", npz)
+    print("Mapping files:", args.out_dir / "index_map.json", "and", args.out_dir / "index_map.txt")
     if imgs:
         print("First preprocessed image:", imgs[0].name)
     if wm:
