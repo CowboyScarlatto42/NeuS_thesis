@@ -1,189 +1,176 @@
 #!/usr/bin/env python3
 """
-build_colmap_subset.py
+colmap_dataset_builder.py
 
-Input:
-- N .txt files, each line contains an image id/name like:
-    img000385
-    img000385.png
-    000385.png
-    /path/to/000385.png
-  (we extract numeric id robustly)
+Given a src_dataset with:
+  src_dataset/
+    image/000.png..999.png
+    mask/000.png..999.png
+    cameras_spe3r.npz  (world_mat_0..999, scale_mat_0..999)  OR (world_mat_<orig_id>...)
 
-Source dataset naming:
-- Files in src_images_dir are named with fixed digits, e.g. 001.png, 385.png, etc.
-  (default src_digits=3)
-- (Optional) Masks in src_masks_dir have THE SAME filenames as images in src_images_dir.
+and a split txt file with lines like:
+  123
+  000123.png
+  img000123
+  img000123.png
 
-Output:
-out_dir/
-  images/
-    000.png, 001.png, ..., (M-1).png     (copied + renamed)
-  masks/                                 (only if --src_masks_dir is provided)
-    000.png, 001.png, ..., (M-1).png     (copied + renamed, same names as images)
-  mapping.json                           (source_id -> renamed)
+Create:
+  out_dir/
+    image/ (reindexed 0..K-1)
+    mask/
+    cameras_spe3r.npz (subset + reindexed mats)
+    split_used.txt
+    index_map.json
 
-Usage (Colab):
-  !python build_colmap_subset.py \
-      --txt_paths /content/orbit230.txt \
-      --src_images_dir /content/drive/MyDrive/SPE3R/images \
-      --src_masks_dir  /content/drive/MyDrive/SPE3R/masks \
-      --out_dir /content/drive/MyDrive/colmap_subset_230 \
-      --src_digits 3
+Assumptions:
+- Source images/masks are named with fixed 3 digits: 000.png, 001.png, ...
+- NPZ keys are world_mat_<orig_id>, scale_mat_<orig_id>
 """
 
 import argparse
 import json
+import re
 import shutil
 from pathlib import Path
-from typing import List, Dict
+import numpy as np
 
 
-def extract_numeric_id(name: str) -> int:
-    s = Path(name).stem
-    digits = "".join([c for c in s if c.isdigit()])
-    if not digits:
-        raise ValueError(f"Cannot extract numeric id from: {name}")
-    return int(digits[-6:])
-
-
-def read_txt_list(txt_path: Path) -> List[str]:
-    names: List[str] = []
-    with txt_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            s = line.strip()
-            if not s or s.startswith("#"):
-                continue
-            names.append(Path(s).name)
-    return names
-
-
-def unique_preserve_order(seq: List[int]) -> List[int]:
-    seen = set()
-    out: List[int] = []
-    for x in seq:
-        if x in seen:
+def parse_split_file(split_path: Path) -> list[int]:
+    idxs = []
+    for raw in split_path.read_text().splitlines():
+        line = raw.strip()
+        if not line:
             continue
-        seen.add(x)
-        out.append(x)
-    return out
+        m = re.search(r"(\d+)", line)
+        if not m:
+            raise ValueError(f"No index found in line: '{line}' ({split_path})")
+        idxs.append(int(m.group(1)))
+    return idxs
 
 
-def infer_digits(n: int) -> int:
-    return max(3, len(str(max(0, n - 1))))
+def dst_name(new_i: int, dst_digits: int) -> str:
+    """
+    dst_digits:
+      - 3  -> 000.png style
+      - 0  -> 0.png style
+      - 6  -> 000000.png style
+    """
+    if dst_digits <= 0:
+        return f"{new_i}.png"
+    return f"{new_i:0{dst_digits}d}.png"
 
 
-def id_to_src_filename(idx: int, src_digits: int, ext: str = ".png") -> str:
-    return f"{idx:0{src_digits}d}{ext}"
+def copy_reindexed(src_folder: Path, dst_folder: Path, orig_indices: list[int], dst_digits: int):
+    dst_folder.mkdir(parents=True, exist_ok=True)
+    for new_i, orig_i in enumerate(orig_indices):
+        src = src_folder / f"{orig_i:03d}.png"
+        if not src.exists():
+            raise FileNotFoundError(f"Missing file: {src}")
+        dst = dst_folder / dst_name(new_i, dst_digits)
+        shutil.copy2(src, dst)
+
+
+def subset_cameras_npz(src_npz: Path, dst_npz: Path, orig_indices: list[int]):
+    data = np.load(src_npz)
+    out = {}
+
+    has_w_inv = any(k.startswith("world_mat_inv_") for k in data.keys())
+    has_s_inv = any(k.startswith("scale_mat_inv_") for k in data.keys())
+
+    for new_i, orig_i in enumerate(orig_indices):
+        # forward
+        w_key = f"world_mat_{orig_i}"
+        s_key = f"scale_mat_{orig_i}"
+        if w_key not in data or s_key not in data:
+            raise KeyError(f"Missing keys '{w_key}'/'{s_key}' in {src_npz}")
+        out[f"world_mat_{new_i}"] = data[w_key]
+        out[f"scale_mat_{new_i}"] = data[s_key]
+
+        # inverse (optional but present in your case)
+        if has_w_inv:
+            w_inv = f"world_mat_inv_{orig_i}"
+            if w_inv not in data:
+                raise KeyError(f"Missing key '{w_inv}' in {src_npz}")
+            out[f"world_mat_inv_{new_i}"] = data[w_inv]
+
+        if has_s_inv:
+            s_inv = f"scale_mat_inv_{orig_i}"
+            if s_inv not in data:
+                raise KeyError(f"Missing key '{s_inv}' in {src_npz}")
+            out[f"scale_mat_inv_{new_i}"] = data[s_inv]
+
+    out["index_map"] = np.array(orig_indices, dtype=np.int32)
+    np.savez(dst_npz, **out)
+
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Build a COLMAP-ready subset folder from image lists (optionally with masks)."
-    )
-    parser.add_argument("--txt_paths", nargs="+", required=True)
-    parser.add_argument("--src_images_dir", required=True)
-    parser.add_argument("--src_masks_dir", default=None)
-    parser.add_argument("--out_dir", required=True)
-    parser.add_argument("--digits", type=int, default=None)
-    parser.add_argument("--src_digits", type=int, default=3)
-    parser.add_argument("--src_ext", type=str, default=".png")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--src_dataset", type=str, required=True,
+                    help="Folder containing image/, mask/, cameras_spe3r.npz")
+    ap.add_argument("--split_txt", type=str, required=True,
+                    help="TXT containing selected original ids/names (img000123, 000123.png, 123, ...)")
+    ap.add_argument("--out_dir", type=str, required=True,
+                    help="Output folder to create (will contain image/, mask/, cameras_spe3r.npz)")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="Overwrite existing out_dir if it exists")
+    ap.add_argument("--dst_digits", type=int, default=3,
+                    help="Digits for destination filenames (default 3 -> 000.png). Use 0 for 0.png style.")
+    args = ap.parse_args()
 
-    txt_paths = [Path(p) for p in args.txt_paths]
-    src_images_dir = Path(args.src_images_dir)
-    src_masks_dir = Path(args.src_masks_dir) if args.src_masks_dir is not None else None
+    src_dataset = Path(args.src_dataset)
+    split_txt = Path(args.split_txt)
     out_dir = Path(args.out_dir)
 
-    if not src_images_dir.exists():
-        raise FileNotFoundError(f"src_images_dir not found: {src_images_dir}")
-    if src_masks_dir is not None and not src_masks_dir.exists():
-        raise FileNotFoundError(f"src_masks_dir not found: {src_masks_dir}")
+    src_images = src_dataset / "image"
+    src_masks = src_dataset / "mask"
+    src_npz = src_dataset / "cameras_spe3r.npz"
 
-    listed_raw: List[str] = []
-    for p in txt_paths:
-        if not p.exists():
-            raise FileNotFoundError(f"TXT file not found: {p}")
-        listed_raw.extend(read_txt_list(p))
+    if not src_images.exists() or not src_masks.exists() or not src_npz.exists():
+        raise FileNotFoundError(
+            "src_dataset must contain: image/, mask/, cameras_spe3r.npz\n"
+            f"Checked:\n- {src_images} exists={src_images.exists()}\n"
+            f"- {src_masks} exists={src_masks.exists()}\n"
+            f"- {src_npz} exists={src_npz.exists()}"
+        )
+    if not split_txt.exists():
+        raise FileNotFoundError(f"split_txt not found: {split_txt}")
 
-    if not listed_raw:
-        raise ValueError("No image names found in the provided txt files.")
+    orig_indices = parse_split_file(split_txt)
 
-    listed_ids: List[int] = []
-    bad_lines: List[str] = []
-    for s in listed_raw:
-        try:
-            listed_ids.append(extract_numeric_id(s))
-        except ValueError:
-            bad_lines.append(s)
-    if not listed_ids:
-        raise ValueError("Could not parse any numeric ids from txt lists.")
-    listed_ids = unique_preserve_order(listed_ids)
+    if len(orig_indices) != len(set(orig_indices)):
+        raise ValueError(f"Duplicate indices in {split_txt}")
+    if min(orig_indices) < 0:
+        raise ValueError(f"Negative index found in {split_txt}")
 
-    if bad_lines:
-        print(f"[WARN] {len(bad_lines)} unparseable lines (showing up to 10): {bad_lines[:10]}")
+    if out_dir.exists():
+        if args.overwrite:
+            shutil.rmtree(out_dir)
+        else:
+            raise FileExistsError(f"{out_dir} exists. Use --overwrite to replace it.")
 
-    images_out = out_dir / "images"
-    images_out.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dst_images = out_dir / "image"
+    dst_masks = out_dir / "mask"
+    dst_npz = out_dir / "cameras_spe3r.npz"
 
-    masks_out = None
-    if src_masks_dir is not None:
-        masks_out = out_dir / "masks"
-        masks_out.mkdir(parents=True, exist_ok=True)
+    print(f"=== BUILD SUBSET | N={len(orig_indices)} | idx range [{min(orig_indices)}, {max(orig_indices)}] ===")
+    print(f"src_dataset: {src_dataset}")
+    print(f"split_txt:   {split_txt}")
+    print(f"out_dir:     {out_dir}")
+    print(f"dst_digits:  {args.dst_digits}")
 
-    digits = args.digits if args.digits is not None else infer_digits(len(listed_ids))
+    copy_reindexed(src_images, dst_images, orig_indices, dst_digits=args.dst_digits)
+    copy_reindexed(src_masks, dst_masks, orig_indices, dst_digits=args.dst_digits)
+    subset_cameras_npz(src_npz, dst_npz, orig_indices)
 
-    source_id_to_renamed: Dict[str, str] = {}
-    missing_ids: List[int] = []
+    (out_dir / "split_used.txt").write_text(split_txt.read_text(), encoding="utf-8")
+    (out_dir / "index_map.json").write_text(json.dumps({"orig_indices": orig_indices}, indent=2), encoding="utf-8")
 
-    i_out = 0
-    for idx in listed_ids:
-        src_name = id_to_src_filename(idx, src_digits=args.src_digits, ext=args.src_ext)
-        src_img = src_images_dir / src_name
-        if not src_img.exists():
-            missing_ids.append(idx)
-            continue
-
-        new_name = f"{i_out:0{digits}d}{src_img.suffix.lower()}"
-        shutil.copy2(src_img, images_out / new_name)
-
-        if src_masks_dir is not None:
-            src_mask = src_masks_dir / src_name
-            if not src_mask.exists():
-                raise FileNotFoundError(f"Mask missing for image '{src_name}' in {src_masks_dir}")
-            shutil.copy2(src_mask, masks_out / new_name)
-
-        source_id_to_renamed[str(idx)] = new_name
-        i_out += 1
-
-    mapping_path = out_dir / "mapping.json"
-    mapping_path.write_text(
-        json.dumps(
-            {
-                "src_images_dir": str(src_images_dir),
-                "src_masks_dir": str(src_masks_dir) if src_masks_dir else None,
-                "txt_paths": [str(p) for p in txt_paths],
-                "src_digits": args.src_digits,
-                "src_ext": args.src_ext,
-                "digits": digits,
-                "num_listed_unique_ids": len(listed_ids),
-                "num_copied": len(source_id_to_renamed),
-                "missing_image_ids": missing_ids,
-                "listed_ids_in_order": listed_ids,
-                "source_id_to_renamed": source_id_to_renamed,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    print(f"[OK] Listed unique ids: {len(listed_ids)}")
-    print(f"[OK] Copied images: {len(source_id_to_renamed)} -> {images_out}")
-    if src_masks_dir is not None:
-        print(f"[OK] Copied masks:  {len(source_id_to_renamed)} -> {masks_out}")
-    if missing_ids:
-        print(f"[WARN] Missing source images: {len(missing_ids)} (see mapping.json)")
-    print(f"[OK] Mapping saved: {mapping_path}")
+    print("[OK] Done.")
+    print(f"images: {dst_images}")
+    print(f"masks:  {dst_masks}")
+    print(f"npz:    {dst_npz}")
 
 
 if __name__ == "__main__":

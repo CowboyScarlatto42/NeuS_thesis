@@ -2,24 +2,25 @@
 """
 views_selector.py
 
-Select views on a tilted circular orbit and write:
-- views txt (e.g., 000123.png or img000123 depending on --filename_out_mode)
-- labels_subset.json containing ONLY the selected entries (filtrated from labels_json),
-  with 'filename' rewritten consistently with --filename_out_mode.
+Uso: genera SOLO il file .txt con la lista immagini per NeuS (subset COLMAP).
 
-labels_json format supported:
-- list of dicts OR {"data":[...]}
-- each entry filename can be like "img000001" (no ext) etc.
+Input:
+- labels_json: labels_subset.json del SUBSET, con entry:
+    {"filename":"img000001", "q_vbs2tango_true":[...], "r_Vo2To_vbs_true":[...]}
+  dove filename è 1-based (img000001..img000N)
 
+Output:
+- .txt con nomi immagini NeuS subset (0-based): 000.png, 001.png, ...
+
+NOTA:
+- Non usa split black/earth e non usa range 0..499. Lavora sul subset.
 """
 
 import os
 import json
 import argparse
 import numpy as np
-import matplotlib.pyplot as plt
 from pathlib import Path
-from mpl_toolkits.mplot3d import Axes3D  # noqa
 
 
 def quat_xyzw_to_R(q: np.ndarray) -> np.ndarray:
@@ -37,48 +38,38 @@ def quat_xyzw_to_R(q: np.ndarray) -> np.ndarray:
     ], dtype=np.float64)
 
 
-def extract_numeric_id(name: str):
-    """Extract last up-to-6 digits from any string like img000001 / 000001.png / etc."""
-    s = Path(str(name)).stem
+def extract_subset_id_1based(filename: str):
+    """img000001 -> 1"""
+    s = Path(str(filename)).stem
     digits = "".join([c for c in s if c.isdigit()])
-    return int(digits[-6:]) if digits else None
+    return int(digits) if digits else None
 
 
-def id_to_name(idx: int, mode: str) -> str:
+def subset_id_to_neus_png(subset_id_1based: int, digits_png: int = 3) -> str:
+    """1-based id -> 0-based png name"""
+    new0 = subset_id_1based - 1
+    return f"{new0:0{digits_png}d}.png"
+
+
+def read_txt_as_subset_ids_1based(txt_path: str) -> set:
     """
-    mode:
-      - 'png6' -> 000123.png
-      - 'img6' -> img000123
+    Legge un txt NeuS (righe tipo 000.png) e ritorna gli id subset 1-based:
+      000.png -> 1
+      001.png -> 2
     """
-    if mode == "png6":
-        return f"{idx:06d}.png"
-    if mode == "img6":
-        return f"img{idx:06d}"
-    raise ValueError(f"Unknown filename mode: {mode}")
-
-
-def read_train_ids(train_txt: str) -> set:
-    train_ids = set()
-    with open(train_txt, "r", encoding="utf-8") as f:
+    out = set()
+    with open(txt_path, "r", encoding="utf-8") as f:
         for line in f:
             s = line.strip()
             if not s:
                 continue
-            i = extract_numeric_id(s)
-            if i is not None:
-                train_ids.add(int(i))
-    return train_ids
-
-
-def read_many_train_ids(train_txt_list) -> set:
-    exclude = set()
-    for p in train_txt_list:
-        if p is None:
-            continue
-        if not os.path.isfile(p):
-            raise FileNotFoundError(f"--train_txt file not found: {p}")
-        exclude.update(read_train_ids(p))
-    return exclude
+            stem = Path(s).stem
+            digits = "".join([c for c in stem if c.isdigit()])
+            if not digits:
+                continue
+            idx0 = int(digits)           # 0-based
+            out.add(idx0 + 1)            # -> 1-based
+    return out
 
 
 def orbit_frame_from_tilt_x(tilt_deg: float):
@@ -93,68 +84,51 @@ def orbit_frame_from_tilt_x(tilt_deg: float):
     return u, v, n
 
 
-def select_validation_from_bin(idxs_in_bin, ids, dists, exclude_ids):
+def select_best_in_bin(idxs_in_bin, ids_1based, dists, exclude_ids_1based):
     if idxs_in_bin.size == 0:
         return None
-    idx_candidates_sorted = idxs_in_bin[np.argsort(dists[idxs_in_bin])]
-    for j in idx_candidates_sorted:
-        if int(ids[j]) not in exclude_ids:
+    idx_sorted = idxs_in_bin[np.argsort(dists[idxs_in_bin])]
+    for j in idx_sorted:
+        if int(ids_1based[j]) not in exclude_ids_1based:
             return int(j)
     return None
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["train", "val"], required=True)
-    parser.add_argument("--labels_json", type=str, required=True)
-    parser.add_argument("--split", choices=["black", "earth"], required=True)
-    parser.add_argument("--views_counter", type=int, required=True)
-    parser.add_argument("--orbit_samples", type=int, default=256)
-    parser.add_argument("--tilt_deg", type=float, required=True)
-    parser.add_argument("--train_txt", action="append", default=[],
-                        help="(val only) repeatable: --train_txt a.txt --train_txt b.txt")
-    parser.add_argument("--out_dir", type=str, required=True)
-    parser.add_argument("--out_name", type=str, default=None)
+    p = argparse.ArgumentParser()
+    p.add_argument("--mode", choices=["train", "val"], required=True)
+    p.add_argument("--labels_json", type=str, required=True, help="labels_subset.json (subset-only, img000001..)")
+    p.add_argument("--views_counter", type=int, required=True)
+    p.add_argument("--tilt_deg", type=float, required=True)
+    p.add_argument("--out_dir", type=str, required=True)
+    p.add_argument("--out_name", type=str, default=None)
+    p.add_argument("--orbit_samples", type=int, default=256)  # kept for compatibility, not used here
+    p.add_argument("--train_txt", action="append", default=[],
+                   help="(val only) txt di train da escludere (righe tipo 000.png)")
 
-    # NEW
-    parser.add_argument("--labels_out", type=str, default=None,
-                        help="Output path for labels subset (default: out_dir/labels_subset_*.json)")
-    parser.add_argument("--filename_out_mode", choices=["png6", "img6"], default="png6",
-                        help="How to write filenames in txt AND in labels_subset.json")
-
-    args = parser.parse_args()
+    args = p.parse_args()
 
     if args.mode == "val" and len(args.train_txt) == 0:
         raise ValueError("--train_txt is required when --mode val")
 
-    IDX_MIN, IDX_MAX = (0, 499) if args.split == "black" else (500, 999)
-    K_SELECT = int(args.views_counter)
-    K_ORBIT_SAMPLES = int(args.orbit_samples)
-    tilt_deg = float(args.tilt_deg)
-
     os.makedirs(args.out_dir, exist_ok=True)
 
-    if args.out_name is not None:
-        out_name = args.out_name
-    else:
-        out_name = f"{args.mode}_views_{args.split}_tilt{tilt_deg:g}_K{K_SELECT}.txt"
-    out_path = os.path.join(args.out_dir, out_name)
+    K = int(args.views_counter)
+    tilt_deg = float(args.tilt_deg)
 
-    # labels_out default
-    if args.labels_out is None:
-        labels_out = os.path.join(args.out_dir, f"labels_subset_{args.mode}_{args.split}_tilt{tilt_deg:g}_K{K_SELECT}.json")
+    if args.out_name is None:
+        out_name = f"{args.mode}_views_tilt{tilt_deg:g}_K{K}.txt"
     else:
-        labels_out = args.labels_out
+        out_name = args.out_name
+    out_path = os.path.join(args.out_dir, out_name)
 
     exclude_ids = set()
     if args.mode == "val":
-        exclude_ids = read_many_train_ids(args.train_txt)
-        print(f"[INFO] loaded {len(exclude_ids)} training ids from {len(args.train_txt)} txt files")
+        for t in args.train_txt:
+            exclude_ids |= read_txt_as_subset_ids_1based(t)
+        print(f"[INFO] val mode: excluding {len(exclude_ids)} ids from {len(args.train_txt)} train txt files")
     else:
-        print("[INFO] mode=train (no exclusions)")
-
-    if not os.path.isfile(args.labels_json):
-        raise FileNotFoundError(f"labels_json not found: {args.labels_json}")
+        print("[INFO] train mode: no exclusions")
 
     with open(args.labels_json, "r", encoding="utf-8") as f:
         raw = json.load(f)
@@ -163,33 +137,32 @@ def main():
     if not isinstance(entries, list):
         raise ValueError("labels_json must be a list or a dict with key 'data'")
 
-    ids = []
+    ids_1based = []
     pT_C = []
-    entry_by_id = {}
 
     for e in entries:
-        i = extract_numeric_id(e.get("filename", ""))
-        if i is None or i < IDX_MIN or i > IDX_MAX:
+        sid = extract_subset_id_1based(e.get("filename", ""))
+        if sid is None:
             continue
 
         q = np.array(e["q_vbs2tango_true"], dtype=np.float64)
         t = np.array(e["r_Vo2To_vbs_true"], dtype=np.float64)
 
         R_CT = quat_xyzw_to_R(q)
-        p = -R_CT.T @ t
+        p_cam = -R_CT.T @ t
 
-        ids.append(i)
-        pT_C.append(p)
-        entry_by_id[int(i)] = e
+        ids_1based.append(int(sid))
+        pT_C.append(p_cam)
 
-    if len(ids) == 0:
-        raise RuntimeError(f"No poses found in range {IDX_MIN}..{IDX_MAX}.")
+    if len(ids_1based) == 0:
+        raise RuntimeError("No valid poses found in labels_json.")
 
-    ids = np.array(ids, dtype=int)
+    ids_1based = np.array(ids_1based, dtype=int)
     pT_C = np.stack(pT_C, axis=0)
 
-    print(f"[INFO] loaded {len(ids)} poses in range {ids.min()}..{ids.max()}")
+    print(f"[INFO] loaded {len(ids_1based)} poses (subset ids 1-based), range {ids_1based.min()}..{ids_1based.max()}")
 
+    # Orbit selection logic (same as your original)
     u, v, n = orbit_frame_from_tilt_x(tilt_deg)
     pu = pT_C @ u
     pv = pT_C @ v
@@ -201,60 +174,31 @@ def main():
 
     az = np.arctan2(pv, pu)
     az = (az + 2*np.pi) % (2*np.pi)
-    bin_id = np.floor(K_SELECT * az / (2*np.pi)).astype(int)
-    bin_id = np.clip(bin_id, 0, K_SELECT-1)
+    bin_id = np.floor(K * az / (2*np.pi)).astype(int)
+    bin_id = np.clip(bin_id, 0, K-1)
 
-    selected_indices = []
-    for k in range(K_SELECT):
+    selected_idx = []
+    for k in range(K):
         idxs_in_bin = np.where(bin_id == k)[0]
         if idxs_in_bin.size == 0:
             continue
-        idx_selected = select_validation_from_bin(
-            idxs_in_bin=idxs_in_bin, ids=ids, dists=dists, exclude_ids=exclude_ids
-        )
-        if idx_selected is not None:
-            selected_indices.append(idx_selected)
+        j = select_best_in_bin(idxs_in_bin, ids_1based, dists, exclude_ids)
+        if j is not None:
+            selected_idx.append(j)
 
-    selected_indices = np.array(selected_indices, dtype=int)
-    selected_ids = ids[selected_indices]
+    selected_idx = np.array(selected_idx, dtype=int)
+    selected_ids = ids_1based[selected_idx]
     selected_ids_sorted = sorted(selected_ids.tolist())
 
-    print(f"[INFO] selected {len(selected_ids_sorted)}/{K_SELECT} bins")
-    print("[SELECTED IDS]", selected_ids_sorted)
+    print(f"[INFO] selected {len(selected_ids_sorted)}/{K} bins")
+    print("[SELECTED subset ids (1-based)]", selected_ids_sorted)
 
-    # ---- Write views txt ----
-    selected_filenames = [id_to_name(i, args.filename_out_mode) for i in selected_ids_sorted]
+    # Write NeuS txt (000.png etc)
     with open(out_path, "w", encoding="utf-8") as f:
-        for name in selected_filenames:
-            f.write(name + "\n")
-    print(f"[INFO] Saved views txt: {out_path}")
+        for sid in selected_ids_sorted:
+            f.write(subset_id_to_neus_png(sid) + "\n")
 
-    # ---- Write labels_subset.json (filtered + filename rewritten) ----
-    labels_subset = []
-    for i in selected_ids_sorted:
-        e = entry_by_id.get(int(i))
-        if e is None:
-            continue
-        e2 = dict(e)
-        e2["filename"] = id_to_name(int(i), args.filename_out_mode) if args.filename_out_mode == "png6" else id_to_name(int(i), "img6")
-        # if mode png6 -> filename "000123.png"
-        # if mode img6 -> filename "img000123"
-        labels_subset.append(e2)
-
-    # preserve original wrapper
-    if isinstance(raw, dict) and "data" in raw:
-        out_obj = dict(raw)
-        out_obj["data"] = labels_subset
-    else:
-        out_obj = labels_subset
-
-    with open(labels_out, "w", encoding="utf-8") as f:
-        json.dump(out_obj, f, indent=2)
-
-    print(f"[INFO] Saved labels subset: {labels_out} ({len(labels_subset)} entries)")
-
-    # ---- (plots unchanged - you can keep your plotting code as before) ----
-    # (omitted here for brevity)
+    print(f"[INFO] Saved txt for NeuS: {out_path}")
 
 
 if __name__ == "__main__":
