@@ -1,3 +1,30 @@
+#!/usr/bin/env python3
+"""
+mesh_metrics.py
+
+Compute 3D surface distances (sample-based Chamfer, bidirectional) and
+(pixel) reprojection error metrics (true 3D->2D projection, no rendering).
+
+3D metrics:
+- Sample N points on each mesh surface
+- Nearest-neighbor distances pred->gt and gt->pred
+- Stats + histograms (fraction-of-points, log-x)
+
+Pixel metrics (optional):
+- Uses cameras_*.npz (world_mat_i, scale_mat_i)
+- For each sampled point, pair it with its NN on the other mesh (from KDTree)
+- For each view, project both points, compute 2D pixel distance
+- Validity: Z > 0 only (no FOV clipping, per your request)
+- Aggregate per point as median over views
+- Stats + histograms
+
+Outputs (if --out_dir is given):
+- pred_to_gt.npy, gt_to_pred.npy
+- (optional) pred_to_gt_px.npy, gt_to_pred_px.npy
+- hist_*.png
+- stats.json
+"""
+
 import argparse
 from pathlib import Path
 import json
@@ -47,6 +74,11 @@ def sample_surface(mesh: trimesh.Trimesh, n: int, seed: int) -> np.ndarray:
 # Stats + plotting
 # ============================================================
 def stats(d: np.ndarray) -> dict:
+    d = np.asarray(d)
+    d = d[np.isfinite(d)]
+    if d.size == 0:
+        return {"mean": float("nan"), "std": float("nan"), "median": float("nan"),
+                "p95": float("nan"), "max": float("nan")}
     return {
         "mean": float(np.mean(d)),
         "std": float(np.std(d)),
@@ -69,14 +101,15 @@ def plot_histogram_fraction(
     save_path: Path | None = None,
     n_bins: int = 100,
 ):
+    d = np.asarray(d)
     d = d[np.isfinite(d)]
     d = d[d > 0]
     if d.size == 0:
         print(f"[WARN] No valid values for histogram: {title}")
         return
 
+    # log-spaced bins
     bins = np.logspace(np.log10(d.min()), np.log10(d.max()), n_bins)
-
     weights = np.ones_like(d) / len(d)
 
     plt.figure(figsize=(7, 5))
@@ -114,38 +147,52 @@ def load_cameras(npz_path: Path):
     return world_mats, scale_mats
 
 
-def focal_from_world_mat(world_mat: np.ndarray) -> float:
-    # NeuS convention: world_mat ≈ K [R|t]
-    K = world_mat[:3, :3]
-    fx = np.linalg.norm(K[0, :])
-    fy = np.linalg.norm(K[1, :])
-    return 0.5 * (fx + fy)
+def project_uvz(points_world: np.ndarray, world_mat: np.ndarray, scale_mat: np.ndarray):
+    """
+    Project points using P = (world_mat @ scale_mat)[:3,:4].
 
-
-def depths_for_points(points_world: np.ndarray, world_mat: np.ndarray, scale_mat: np.ndarray) -> np.ndarray:
+    Returns:
+      uv: (N,2) pixel coordinates after perspective division
+      z : (N,) depth (third component before division). Validity uses z>0 only.
+    """
     N = points_world.shape[0]
     Xh = np.concatenate([points_world, np.ones((N, 1))], axis=1)  # (N,4)
-    M = world_mat @ scale_mat
-    Xc = (M @ Xh.T).T
-    return Xc[:, 2]
+    P = (world_mat @ scale_mat)[:3, :4]                           # (3,4)
+    x = (P @ Xh.T).T                                              # (N,3)
+    z = x[:, 2]
+    uv = np.empty((N, 2), dtype=np.float64)
+    uv[:, 0] = x[:, 0] / z
+    uv[:, 1] = x[:, 1] / z
+    return uv, z
 
 
-def pixel_errors_from_3d(
-    points_world: np.ndarray,
-    d_3d: np.ndarray,
+def reprojection_pixel_errors_median(
+    A: np.ndarray,          # (N,3) points A in world
+    B: np.ndarray,          # (N,3) matched points B in world (same length)
     world_mats,
     scale_mats,
-    z_min: float = 1e-6,
-) -> np.ndarray:
-    focals = np.array([focal_from_world_mat(W) for W in world_mats], dtype=np.float64)
+):
+    """
+    True pixel reprojection distance between paired 3D points (A_i, B_i),
+    aggregated per-point as median over views.
 
-    Z = np.stack(
-        [depths_for_points(points_world, W, S) for W, S in zip(world_mats, scale_mats)],
-        axis=0
-    )  # (V, N)
+    Validity criterion only: Z>0 for BOTH points in a given view.
+    """
+    V = len(world_mats)
+    N = A.shape[0]
+    E = np.full((V, N), np.nan, dtype=np.float64)
 
-    valid = Z > z_min
-    E = (focals[:, None] / np.where(valid, Z, np.nan)) * d_3d[None, :]
+    for i, (Wm, Sm) in enumerate(zip(world_mats, scale_mats)):
+        uvA, zA = project_uvz(A, Wm, Sm)
+        uvB, zB = project_uvz(B, Wm, Sm)
+
+        valid = np.isfinite(zA) & np.isfinite(zB) & (zA > 0) & (zB > 0)
+
+        diff = uvA - uvB
+        e = np.sqrt(diff[:, 0] ** 2 + diff[:, 1] ** 2)
+
+        E[i, valid] = e[valid]
+
     return np.nanmedian(E, axis=0)
 
 
@@ -163,11 +210,9 @@ def main():
                     help="If provided, save .npy arrays, stats.json and histogram PNGs")
 
     ap.add_argument("--cameras_npz", type=Path, default=None,
-                    help="If provided, compute pixel metrics (Option B) using this cameras_*.npz")
+                    help="If provided, compute pixel reprojection metrics using this cameras_*.npz")
     ap.add_argument("--px_thresh", type=float, default=1.0,
                     help="Threshold in pixels for 'fraction within px' metric")
-    ap.add_argument("--z_min", type=float, default=1e-6,
-                    help="Minimum positive depth to consider a view valid")
 
     args = ap.parse_args()
 
@@ -184,13 +229,13 @@ def main():
     G = sample_surface(gt, args.n, seed=args.seed + 1)
 
     # --------------------
-    # 3D Chamfer (linear distances)
+    # 3D Chamfer (linear distances) + store NN indices
     # --------------------
     treeG = cKDTree(G)
-    dP, _ = treeG.query(P, k=1, workers=-1)  # pred -> gt
+    dP, idxP = treeG.query(P, k=1, workers=-1)  # pred -> gt (idx into G)
 
     treeP = cKDTree(P)
-    dG, _ = treeP.query(G, k=1, workers=-1)  # gt -> pred
+    dG, idxG = treeP.query(G, k=1, workers=-1)  # gt -> pred (idx into P)
 
     sP = stats(dP)
     sG = stats(dG)
@@ -200,17 +245,17 @@ def main():
     print_stats("GT → Pred statistics (3D)", sG)
     print(f"\nSymmetric Chamfer (mean, 3D): {chamfer_sym:.6e}")
 
-    # Plot 3D histograms (fraction-of-points)
+    # Plot 3D histograms
     plot_histogram_fraction(
         dP,
         "Distance error distribution (pred → gt)",
-        xlabel="Distance (NeuS normalized units)",
+        xlabel="Distance (normalized units)",
         save_path=(args.out_dir / "hist_pred_to_gt.png" if args.out_dir else None),
     )
     plot_histogram_fraction(
         dG,
         "Distance error distribution (gt → pred)",
-        xlabel="Distance (NeuS normalized units)",
+        xlabel="Distance (normalized units)",
         save_path=(args.out_dir / "hist_gt_to_pred.png" if args.out_dir else None),
     )
 
@@ -227,53 +272,57 @@ def main():
         }
 
     # --------------------
-    # Pixel metrics (Option B)
+    # Pixel reprojection metrics (true projection, no rendering)
     # --------------------
     if args.cameras_npz is not None:
         world_mats, scale_mats = load_cameras(args.cameras_npz)
 
-        eP = pixel_errors_from_3d(P, dP, world_mats, scale_mats, z_min=args.z_min)  # pred->gt px
-        eG = pixel_errors_from_3d(G, dG, world_mats, scale_mats, z_min=args.z_min)  # gt->pred px
+        # Build matched pairs via NN indices from Chamfer computation
+        P_match = G[idxP]  # for each pred point, its NN GT point
+        G_match = P[idxG]  # for each GT point, its NN pred point
 
-        # Drop NaNs: points not valid in any view
+        eP = reprojection_pixel_errors_median(P, P_match, world_mats, scale_mats)  # pred->gt px
+        eG = reprojection_pixel_errors_median(G, G_match, world_mats, scale_mats)  # gt->pred px
+
+        # Drop NaNs: points invalid in all views (Z<=0 for all)
         eP = eP[np.isfinite(eP)]
         eG = eG[np.isfinite(eG)]
 
         sP_px = stats(eP)
         sG_px = stats(eG)
 
-        fracP = float(np.mean(eP <= args.px_thresh))
-        fracG = float(np.mean(eG <= args.px_thresh))
+        fracP = float(np.mean(eP <= args.px_thresh)) if eP.size else float("nan")
+        fracG = float(np.mean(eG <= args.px_thresh)) if eG.size else float("nan")
 
-        print_stats("Pred → GT statistics (pixel)", sP_px)
-        print_stats("GT → Pred statistics (pixel)", sG_px)
+        print_stats("Pred → GT statistics (pixel reprojection)", sP_px)
+        print_stats("GT → Pred statistics (pixel reprojection)", sG_px)
         print(f"\nFraction ≤ {args.px_thresh:.2f} px (pred→gt): {100*fracP:.2f}%")
         print(f"Fraction ≤ {args.px_thresh:.2f} px (gt→pred): {100*fracG:.2f}%")
 
-        # Plot pixel histograms (fraction-of-points)
+        # Plot pixel histograms
         plot_histogram_fraction(
             eP,
-            "Pixel error distribution (pred → gt)",
+            "Pixel reprojection error distribution (pred → gt)",
             xlabel="Pixel error [px]",
             save_path=(args.out_dir / "hist_pred_to_gt_px.png" if args.out_dir else None),
         )
         plot_histogram_fraction(
             eG,
-            "Pixel error distribution (gt → pred)",
+            "Pixel reprojection error distribution (gt → pred)",
             xlabel="Pixel error [px]",
             save_path=(args.out_dir / "hist_gt_to_pred_px.png" if args.out_dir else None),
         )
 
-        if args.out_dir is not None:
+        if args.out_dir is not None and payload is not None:
             np.save(args.out_dir / "pred_to_gt_px.npy", eP)
             np.save(args.out_dir / "gt_to_pred_px.npy", eG)
             payload.update({
-                "pred_to_gt_px": sP_px,
-                "gt_to_pred_px": sG_px,
+                "pred_to_gt_px_reproj": sP_px,
+                "gt_to_pred_px_reproj": sG_px,
                 "frac_within_px_thresh_pred_to_gt": fracP,
                 "frac_within_px_thresh_gt_to_pred": fracG,
                 "px_thresh": args.px_thresh,
-                "z_min": args.z_min,
+                "n_views": len(world_mats),
             })
 
     # --------------------
