@@ -112,6 +112,12 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True):
         exhaustive_matcher_args.extend([
             '--SiftMatching.use_gpu', '1',
         ])
+        print("🎮 GPU abilitata per feature matching")
+    else:
+        exhaustive_matcher_args.extend([
+            '--SiftMatching.use_gpu', '0',
+        ])
+        print("💻 Uso CPU per feature matching")
 
     match_output = subprocess.check_output(
         exhaustive_matcher_args, 
