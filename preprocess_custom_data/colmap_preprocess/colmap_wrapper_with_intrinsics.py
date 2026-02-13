@@ -86,13 +86,13 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True):
         
         feature_extractor_args.extend([
             '--ImageReader.camera_params', params_str,
-            '--ImageReader.existing_camera_id', '1',  # ← CRITICO! Forza uso parametri
         ])
         
         print(f"📷 Intrinseci IMPOSTI (uguali per tutte le immagini):")
         print(f"   Modello: {model}")
         print(f"   Parametri: {params_str}")
-        print(f"   ⚠️  COLMAP userà ESATTAMENTE questi parametri (non li stimerà)")
+        print(f"   ⚠️  NOTA: Con database nuovo, COLMAP userà questi come iniziali")
+        print(f"   ⚠️  Durante mapper potrebbero essere leggermente raffinati")
     else:
         print("⚠️  Intrinseci NON imposti - COLMAP li stimerà")
     
@@ -144,6 +144,15 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True):
         '--Mapper.multiple_models', '0',
         '--Mapper.extract_colors', '0',
     ]
+    
+    # Se abbiamo imposto camera_params, blocca il refinement degli intrinseci
+    if camera_params is not None:
+        mapper_args.extend([
+            '--Mapper.ba_refine_focal_length', '0',      # Non raffinare focal length
+            '--Mapper.ba_refine_principal_point', '0',   # Non raffinare principal point
+            '--Mapper.ba_refine_extra_params', '0',      # Non raffinare distorsione
+        ])
+        print("🔒 Mapper: refinement intrinseci DISABILITATO (parametri bloccati)")
 
     map_output = subprocess.check_output(
         mapper_args, 
