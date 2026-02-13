@@ -85,12 +85,14 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True):
             raise ValueError(f"Modello {model} non supportato")
         
         feature_extractor_args.extend([
-            '--ImageReader.camera_params', params_str
+            '--ImageReader.camera_params', params_str,
+            '--ImageReader.existing_camera_id', '1',  # ← CRITICO! Forza uso parametri
         ])
         
         print(f"📷 Intrinseci IMPOSTI (uguali per tutte le immagini):")
         print(f"   Modello: {model}")
         print(f"   Parametri: {params_str}")
+        print(f"   ⚠️  COLMAP userà ESATTAMENTE questi parametri (non li stimerà)")
     else:
         print("⚠️  Intrinseci NON imposti - COLMAP li stimerà")
     
