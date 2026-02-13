@@ -288,6 +288,13 @@ def main():
         help="Disabilita GPU, usa CPU"
     )
     
+    parser.add_argument(
+        "--skip-colmap",
+        action="store_true",
+        help="Salta COLMAP (Step 1-2), esegui solo generazione poses (Step 3). "
+             "Usa se COLMAP è già completato e vuoi solo generare poses.npy"
+    )
+    
     args = parser.parse_args()
     
     output_path = Path(args.output)
@@ -314,28 +321,55 @@ def main():
     for key, val in camera_params.items():
         print(f"   {key}: {val}")
     
-    # Step 1: Prepara immagini
-    print("\n" + "="*70)
-    print("STEP 1: PREPARAZIONE IMMAGINI")
-    print("="*70)
-    num_images = prepare_images(
-        spe3r_path=args.spe3r_path,
-        satellite=args.satellite,
-        output_path=output_path,
-        start_idx=args.start_idx,
-        num_images=args.num_images
-    )
-    
-    # Step 2: COLMAP con intrinseci imposti
-    print("\n" + "="*70)
-    print("STEP 2: COLMAP (FEATURE EXTRACTION + MATCHING + SFM)")
-    print("="*70)
-    run_colmap_with_intrinsics(
-        basedir=output_path,
-        neus_path=args.neus_path,
-        camera_params=camera_params,
-        use_gpu=args.use_gpu
-    )
+    # Step 1-2: COLMAP (se non skippato)
+    if args.skip_colmap:
+        print("\n" + "="*70)
+        print("⏭️  SKIP: STEPS 1-2 (COLMAP già completato)")
+        print("="*70)
+        print(f"✅ Usando risultati esistenti in: {output_path}")
+        
+        # Verifica che i file esistano
+        required_files = [
+            output_path / "database.db",
+            output_path / "sparse" / "0" / "cameras.bin",
+            output_path / "sparse" / "0" / "images.bin",
+            output_path / "sparse" / "0" / "points3D.bin",
+        ]
+        
+        missing = [f for f in required_files if not f.exists()]
+        if missing:
+            print("\n❌ ERRORE: File COLMAP mancanti:")
+            for f in missing:
+                print(f"   - {f}")
+            print("\n💡 Rimuovi --skip-colmap per eseguire COLMAP da zero")
+            return
+        
+        print("✅ Tutti i file COLMAP presenti")
+        num_images = len(list((output_path / "images").glob("*.jpg"))) + \
+                     len(list((output_path / "images").glob("*.png")))
+    else:
+        # Step 1: Prepara immagini
+        print("\n" + "="*70)
+        print("STEP 1: PREPARAZIONE IMMAGINI")
+        print("="*70)
+        num_images = prepare_images(
+            spe3r_path=args.spe3r_path,
+            satellite=args.satellite,
+            output_path=output_path,
+            start_idx=args.start_idx,
+            num_images=args.num_images
+        )
+        
+        # Step 2: COLMAP con intrinseci imposti
+        print("\n" + "="*70)
+        print("STEP 2: COLMAP (FEATURE EXTRACTION + MATCHING + SFM)")
+        print("="*70)
+        run_colmap_with_intrinsics(
+            basedir=output_path,
+            neus_path=args.neus_path,
+            camera_params=camera_params,
+            use_gpu=args.use_gpu
+        )
     
     # Step 3: Genera poses.npy e sparse_points.ply
     print("\n" + "="*70)
