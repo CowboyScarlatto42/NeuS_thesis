@@ -4,7 +4,9 @@ colmap_wrapper_with_intrinsics.py
 Versione modificata di colmap_wrapper.py di NeuS che permette di
 IMPORRE gli intrinseci della camera invece di lasciarli stimare a COLMAP.
 
-Per SPE3R: Impostiamo fx=3003, fy=3003, cx=128, cy=128
+Per SPE3R: Impostiamo fx=1277.37, fy=1277.37, cx=128, cy=128
+
+FIXED: Aggiunto QT_QPA_PLATFORM=offscreen per ambienti headless (Colab)
 """
 
 import os
@@ -29,6 +31,10 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True):
             Se None, COLMAP stima automaticamente
         use_gpu: Se True, usa GPU per feature extraction (default: True)
     """
+    
+    # FIX per ambienti headless (Colab, server senza display)
+    # COLMAP usa Qt che cerca un display anche quando non necessario
+    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
     
     logfile_name = os.path.join(basedir, 'colmap_output.txt')
     logfile = open(logfile_name, 'w')
@@ -60,7 +66,7 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True):
             '--ImageReader.camera_model', model,
         ])
         
-        # Costruisci stringa parametri (per SPE3R: fx=fy=3003, cx=cy=128)
+        # Costruisci stringa parametri (per SPE3R: fx=fy=1277.37, cx=cy=128)
         if model == 'PINHOLE':
             params_str = '{},{},{},{}'.format(
                 camera_params['fx'],
