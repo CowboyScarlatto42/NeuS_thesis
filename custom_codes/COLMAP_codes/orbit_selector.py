@@ -258,10 +258,10 @@ def analyze_selection(labels, selected_indices):
     print(f"   Max:     {np.max(angles):.2f}°")
     
     print(f"\n📊 Statistiche Baseline:")
-    print(f"   Media:   {np.mean(baselines):.4f}m")
-    print(f"   Mediana: {np.median(baselines):.4f}m")
-    print(f"   Min:     {np.min(baselines):.4f}m")
-    print(f"   Max:     {np.max(baselines):.4f}m")
+    print(f"   Media:   {np.mean(baselines):.4f} unità")
+    print(f"   Mediana: {np.median(baselines):.4f} unità")
+    print(f"   Min:     {np.min(baselines):.4f} unità")
+    print(f"   Max:     {np.max(baselines):.4f} unità")
     
     # Coverage
     print(f"\n📊 Coverage Dataset:")
@@ -342,7 +342,7 @@ def main():
         '--min-baseline',
         type=float,
         default=0.05,
-        help="Baseline minima tra pose in metri (default: 0.05)"
+        help="Baseline minima tra pose in unità normalizzate (default: 0.05)"
     )
     
     parser.add_argument(
@@ -397,7 +397,7 @@ def main():
     print(f"Labels: {args.labels}")
     print(f"Target immagini: {args.num_images}")
     print(f"Max angolo: {args.max_angle}°")
-    print(f"Min baseline: {args.min_baseline}m")
+    print(f"Min baseline: {args.min_baseline} unità")
     print(f"Output: {args.output}")
     print("="*70)
     
@@ -432,11 +432,6 @@ def main():
     
     print("\n" + "="*70)
     print("✅ COMPLETATO")
-    print("="*70)
-    print(f"\n💡 Prossimi passi:")
-    print(f"1. Usa {args.output} per copiare solo le immagini selezionate")
-    print(f"2. Esegui COLMAP sul subset")
-    print(f"3. Success rate atteso: >80% (overlap garantito)")
     print("="*70)
 
 

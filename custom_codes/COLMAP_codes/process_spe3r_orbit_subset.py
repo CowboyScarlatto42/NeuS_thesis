@@ -28,8 +28,86 @@ import argparse
 from pathlib import Path
 
 
-# ... (tutte le funzioni load_camera_params, run_colmap_with_intrinsics, generate_poses 
-#      rimangono identiche a process_spe3r_single_sat.py)
+def load_camera_params(spe3r_path):
+    """
+    Carica parametri camera da camera.json.
+    
+    Supporta due formati:
+    
+    1. Formato con cameraMatrix (SPE3R standard):
+    {
+        "Nu": 256,
+        "Nv": 256,
+        "cameraMatrix": [
+            [fx, 0,  cx],
+            [0,  fy, cy],
+            [0,  0,  1]
+        ]
+    }
+    
+    2. Formato flat:
+    {
+        "fx": 3003.0,
+        "fy": 3003.0,
+        "cx": 128.0,
+        "cy": 128.0
+    }
+    
+    Returns:
+        dict con fx, fy, cx, cy
+    """
+    camera_json_path = Path(spe3r_path) / "camera.json"
+    
+    if not camera_json_path.exists():
+        raise FileNotFoundError(f"camera.json non trovato in: {spe3r_path}")
+    
+    with open(camera_json_path, 'r') as f:
+        camera_data = json.load(f)
+    
+    # Estrai parametri
+    if 'cameraMatrix' in camera_data:
+        # Formato SPE3R con cameraMatrix (OpenCV style)
+        K = camera_data['cameraMatrix']
+        fx = K[0][0]
+        fy = K[1][1]
+        cx = K[0][2]
+        cy = K[1][2]
+        
+        width = camera_data.get('Nu', None)
+        height = camera_data.get('Nv', None)
+        
+        print(f"📷 Caricati parametri da camera.json (cameraMatrix):")
+        print(f"   fx: {fx}")
+        print(f"   fy: {fy}")
+        print(f"   cx: {cx}")
+        print(f"   cy: {cy}")
+        if width and height:
+            print(f"   Risoluzione: {width}x{height}")
+        
+    elif 'fx' in camera_data:
+        # Formato flat
+        fx = camera_data['fx']
+        fy = camera_data['fy']
+        cx = camera_data['cx']
+        cy = camera_data['cy']
+        
+        print(f"📷 Caricati parametri da camera.json (flat):")
+        print(f"   fx: {fx}")
+        print(f"   fy: {fy}")
+        print(f"   cx: {cx}")
+        print(f"   cy: {cy}")
+        
+    else:
+        raise ValueError(
+            "camera.json deve contenere 'cameraMatrix' o campi 'fx', 'fy', 'cx', 'cy'"
+        )
+    
+    return {
+        'fx': fx,
+        'fy': fy,
+        'cx': cx,
+        'cy': cy
+    }
 
 
 def prepare_images_from_list(spe3r_path, satellite, selected_images_file, output_path):
@@ -95,6 +173,65 @@ def prepare_images_from_list(spe3r_path, satellite, selected_images_file, output
         print(f"⚠️  {len(missing)} immagini non trovate")
     
     return copied
+
+
+def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True):
+    """
+    Lancia COLMAP usando il wrapper modificato di NeuS.
+    """
+    print("\n" + "="*70)
+    print("ESECUZIONE COLMAP CON INTRINSECI IMPOSTI")
+    print("="*70)
+    
+    # Aggiungi NeuS al path Python
+    neus_preprocess_path = Path(neus_path) / "preprocess_custom_data" / "colmap_preprocess"
+    sys.path.insert(0, str(neus_preprocess_path))
+    
+    # Importa il wrapper modificato
+    from colmap_wrapper_with_intrinsics import run_colmap
+    
+    # Esegui COLMAP
+    run_colmap(
+        basedir=str(basedir),
+        match_type='exhaustive_matcher',
+        camera_params=camera_params,
+        use_gpu=use_gpu
+    )
+    
+    print("="*70)
+    print("✅ COLMAP COMPLETATO")
+    print("="*70)
+
+
+def generate_poses(basedir, neus_path):
+    """
+    Genera poses.npy usando pose_utils.py di NeuS.
+    Questo genera anche sparse_points.ply
+    """
+    print("\n" + "="*70)
+    print("GENERAZIONE POSES.NPY e SPARSE_POINTS.PLY")
+    print("="*70)
+    
+    neus_preprocess_path = Path(neus_path) / "preprocess_custom_data" / "colmap_preprocess"
+    sys.path.insert(0, str(neus_preprocess_path))
+    
+    from pose_utils import load_colmap_data, save_poses
+    
+    # load_colmap_data può ritornare 3 o 4 valori a seconda della versione
+    result = load_colmap_data(str(basedir))
+    
+    if len(result) == 4:
+        poses, pts3d, perm, id_to_idx = result
+        save_poses(str(basedir), poses, pts3d, perm, id_to_idx)
+    elif len(result) == 3:
+        poses, pts3d, perm = result
+        save_poses(str(basedir), poses, pts3d, perm)
+    else:
+        raise ValueError(f"load_colmap_data ha ritornato {len(result)} valori, attesi 3 o 4")
+    
+    print(f"✅ poses.npy creato in: {basedir}")
+    print(f"✅ sparse_points.ply creato in: {basedir}")
+    print("="*70)
 
 
 def main():
