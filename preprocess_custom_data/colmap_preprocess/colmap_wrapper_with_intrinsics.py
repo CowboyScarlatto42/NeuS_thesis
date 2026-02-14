@@ -13,13 +13,13 @@ import os
 import subprocess
 
 
-def run_colmap(basedir, match_type, camera_params=None, use_gpu=True):
+def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_extra_args=None):
     """
     Esegue COLMAP con possibilità di imporre parametri camera.
     
     Args:
         basedir: Directory con sottocartella images/
-        match_type: 'exhaustive_matcher' o 'sequential_matcher'
+        match_type: 'exhaustive_matcher', 'vocab_tree_matcher', 'sequential_matcher', 'spatial_matcher'
         camera_params: Dict con parametri camera UGUALI PER TUTTE LE IMMAGINI:
             {
                 'model': 'PINHOLE',  # o 'SIMPLE_PINHOLE'
@@ -30,7 +30,33 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True):
             }
             Se None, COLMAP stima automaticamente
         use_gpu: Se True, usa GPU per feature extraction (default: True)
+        colmap_extra_args: Dict con flag aggiuntivi per step, es:
+            {
+                'feature_extractor': ['--Flag', 'value', ...],
+                'matcher': ['--Flag', 'value', ...]
+            }
+            Se None, usa default aggressivi per SIFT.
     """
+    
+    # Default aggressivi per SIFT se colmap_extra_args non è fornito
+    if colmap_extra_args is None:
+        colmap_extra_args = {
+            'feature_extractor': [
+                '--SiftExtraction.max_num_features', '20000',
+                '--SiftExtraction.peak_threshold', '0.002',
+                '--SiftExtraction.edge_threshold', '10',
+                '--SiftExtraction.first_octave', '-1',
+                '--SiftExtraction.domain_size_pooling', '1',
+                '--SiftExtraction.estimate_affine_shape', '1',
+            ],
+            'matcher': [
+                '--SiftMatching.guided_matching', '1',
+                '--SiftMatching.max_ratio', '0.9',
+                '--SiftMatching.max_distance', '0.8',
+                '--SiftMatching.cross_check', '1',
+            ],
+        }
+        print("🔧 Usando impostazioni SIFT aggressive (default)")
     
     # FIX per ambienti headless (Colab, server senza display)
     # COLMAP usa Qt che cerca un display anche quando non necessario
@@ -96,6 +122,10 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True):
     else:
         print("⚠️  Intrinseci NON imposti - COLMAP li stimerà")
     
+    # Aggiungi extra args per feature_extractor
+    if colmap_extra_args and 'feature_extractor' in colmap_extra_args:
+        feature_extractor_args.extend(colmap_extra_args['feature_extractor'])
+    
     feat_output = subprocess.check_output(
         feature_extractor_args, 
         universal_newlines=True
@@ -104,25 +134,29 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True):
     print('✅ Features extracted')
 
     # Feature matching
-    exhaustive_matcher_args = [
+    matcher_args = [
         'colmap', match_type, 
         '--database_path', os.path.join(basedir, 'database.db'), 
     ]
     
     # GPU per matching
     if use_gpu:
-        exhaustive_matcher_args.extend([
+        matcher_args.extend([
             '--SiftMatching.use_gpu', '1',
         ])
         print("🎮 GPU abilitata per feature matching")
     else:
-        exhaustive_matcher_args.extend([
+        matcher_args.extend([
             '--SiftMatching.use_gpu', '0',
         ])
         print("💻 Uso CPU per feature matching")
+    
+    # Aggiungi extra args per matcher
+    if colmap_extra_args and 'matcher' in colmap_extra_args:
+        matcher_args.extend(colmap_extra_args['matcher'])
 
     match_output = subprocess.check_output(
-        exhaustive_matcher_args, 
+        matcher_args, 
         universal_newlines=True
     )
     logfile.write(match_output)
