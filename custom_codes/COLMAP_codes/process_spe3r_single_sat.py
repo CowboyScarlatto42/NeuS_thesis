@@ -174,7 +174,8 @@ def prepare_images(spe3r_path, satellite, output_path,
     return len(selected_files)
 
 
-def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True, match_type='vocab_tree_matcher'):
+def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True, 
+                                match_type='vocab_tree_matcher', vocab_tree_path=None):
     """
     Lancia COLMAP usando il wrapper modificato di NeuS.
     """
@@ -189,13 +190,52 @@ def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True, 
     # Importa il wrapper modificato
     from colmap_wrapper_with_intrinsics import run_colmap
     
+    # Prepara colmap_extra_args con parametri aggressivi
+    colmap_extra_args = {
+        'feature_extractor': [
+            '--SiftExtraction.max_num_features', '20000',
+            '--SiftExtraction.peak_threshold', '0.002',
+            '--SiftExtraction.edge_threshold', '10',
+            '--SiftExtraction.first_octave', '-1',
+            '--SiftExtraction.domain_size_pooling', '1',
+            '--SiftExtraction.estimate_affine_shape', '1',
+        ],
+        'matcher': [
+            '--SiftMatching.guided_matching', '1',
+            '--SiftMatching.max_ratio', '0.9',
+            '--SiftMatching.max_distance', '0.8',
+            '--SiftMatching.cross_check', '1',
+        ],
+    }
+    
+    # Se usiamo vocab_tree_matcher, aggiungi vocab_tree_path
+    if match_type == 'vocab_tree_matcher':
+        if vocab_tree_path is None:
+            print("\n⚠️  ERRORE: vocab_tree_matcher richiede --vocab-tree-path")
+            print("Scarica il vocabulary tree con:")
+            print("  python setup_vocab_tree.py --download --output vocab_tree.bin")
+            print("\nPoi riavvia con:")
+            print(f"  --vocab-tree-path vocab_tree.bin")
+            print("\nOppure usa un matcher diverso:")
+            print("  --match-type sequential_matcher  (consigliato per <1000 immagini)")
+            print("  --match-type exhaustive_matcher  (lento ma accurato)")
+            sys.exit(1)
+        
+        # Aggiungi vocab tree path e parametri specifici
+        colmap_extra_args['matcher'].extend([
+            '--VocabTreeMatching.vocab_tree_path', str(vocab_tree_path),
+            '--VocabTreeMatching.num_images', '100',  # Match con top 100 immagini simili
+            '--VocabTreeMatching.max_num_features', '-1',  # Usa tutte le features
+        ])
+        print(f"🌳 Vocabulary tree: {vocab_tree_path}")
+    
     # Esegui COLMAP
     run_colmap(
         basedir=str(basedir),
         match_type=match_type,
         camera_params=camera_params,
         use_gpu=use_gpu,
-        colmap_extra_args=None  # Usa i default aggressivi del wrapper
+        colmap_extra_args=colmap_extra_args
     )
     
     print("="*70)
@@ -297,6 +337,13 @@ def main():
     )
     
     parser.add_argument(
+        "--vocab-tree-path",
+        default=None,
+        help="Path al vocabulary tree .bin (RICHIESTO per vocab_tree_matcher). "
+             "Scarica con: python setup_vocab_tree.py --download --output vocab_tree.bin"
+    )
+    
+    parser.add_argument(
         "--skip-colmap",
         action="store_true",
         help="Salta COLMAP (Step 1-2), esegui solo generazione poses (Step 3). "
@@ -378,7 +425,8 @@ def main():
             neus_path=args.neus_path,
             camera_params=camera_params,
             use_gpu=args.use_gpu,
-            match_type=args.match_type
+            match_type=args.match_type,
+            vocab_tree_path=args.vocab_tree_path
         )
     
     # Step 3: Genera poses.npy e sparse_points.ply

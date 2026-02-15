@@ -139,6 +139,24 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_ext
         '--database_path', os.path.join(basedir, 'database.db'), 
     ]
     
+    # Per vocab_tree_matcher, verifica che vocab_tree_path sia presente
+    if match_type == 'vocab_tree_matcher':
+        # Cerca vocab_tree_path in colmap_extra_args['matcher']
+        vocab_tree_path = None
+        if colmap_extra_args and 'matcher' in colmap_extra_args:
+            extra_matcher_args = colmap_extra_args['matcher']
+            if '--VocabTreeMatching.vocab_tree_path' in extra_matcher_args:
+                idx = extra_matcher_args.index('--VocabTreeMatching.vocab_tree_path')
+                vocab_tree_path = extra_matcher_args[idx + 1]
+        
+        if vocab_tree_path:
+            print(f"🌳 Usando vocabulary tree: {vocab_tree_path}")
+        else:
+            print("⚠️  ATTENZIONE: vocab_tree_matcher richiede --VocabTreeMatching.vocab_tree_path")
+            print("   Scarica vocab tree con:")
+            print("   python setup_vocab_tree.py --download --output vocab_tree.bin")
+            print("   Poi passa nel colmap_extra_args['matcher']")
+    
     # GPU per matching
     if use_gpu:
         matcher_args.extend([
