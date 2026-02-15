@@ -314,6 +314,50 @@ def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True,
             ],
         }
         
+        # Config VALIDATED - Testata con successo: 230/500 immagini registrate
+        SPE3R_VALIDATED = {
+            'feature_extractor': [
+                '--SiftExtraction.max_num_features', '20000',
+                '--SiftExtraction.peak_threshold', '0.004',
+                '--SiftExtraction.edge_threshold', '20',
+                '--SiftExtraction.first_octave', '-1',
+                '--SiftExtraction.num_octaves', '4',
+                '--SiftExtraction.domain_size_pooling', '1',
+                '--SiftExtraction.estimate_affine_shape', '1',
+            ],
+            'matcher': [
+                '--SiftMatching.guided_matching', '1',          # CRITICO
+                '--SiftMatching.max_num_features', '50000',     # CRITICO  
+                '--SiftMatching.max_ratio', '0.8',
+                '--SiftMatching.max_distance', '0.7',
+                '--SiftMatching.cross_check', '1',
+                '--SiftMatching.max_error', '4.0',
+                '--SiftMatching.min_num_inliers', '15',
+                '--SiftMatching.confidence', '0.999',
+                '--SiftMatching.max_num_trials', '10000',
+            ],
+            'mapper': [
+                # INITIALIZATION
+                '--Mapper.init_min_tri_angle', '2.0',
+                '--Mapper.init_min_num_inliers', '30',
+                '--Mapper.init_max_forward_motion', '0.95',
+                # REGISTRATION (Molto permissivo per SPE3R!)
+                '--Mapper.abs_pose_min_num_inliers', '15',      # CRITICO
+                '--Mapper.abs_pose_min_inlier_ratio', '0.05',   # CRITICO: solo 5%!
+                # TRIANGULATION
+                '--Mapper.tri_min_angle', '1.5',
+                '--Mapper.tri_ignore_two_view_tracks', '0',
+                '--Mapper.tri_complete_max_reproj_error', '4.0',
+                # FILTERING
+                '--Mapper.filter_max_reproj_error', '4.0',
+                '--Mapper.filter_min_tri_angle', '1.5',
+                # OTHER
+                '--Mapper.multiple_models', '0',
+                '--Mapper.extract_colors', '0',
+                '--Mapper.min_num_matches', '15',
+            ],
+        }
+        
         SPE3R_VOCAB_TREE_SETTINGS = [
             '--VocabTreeMatching.num_images', '100',
             '--VocabTreeMatching.num_nearest_neighbors', '5',
@@ -330,6 +374,7 @@ def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True,
         'balanced': SPE3R_BALANCED,
         'conservative': SPE3R_CONSERVATIVE,
         'fast': SPE3R_FAST,
+        'validated': SPE3R_VALIDATED,  # User-tested: 230/500 immagini!
     }
     
     selected_config = config_map.get(spe3r_config.lower(), SPE3R_AGGRESSIVE)
@@ -543,10 +588,11 @@ def main():
     
     parser.add_argument(
         "--spe3r-config",
-        default="aggressive",
-        choices=["aggressive", "balanced", "conservative", "fast"],
-        help="Configurazione COLMAP ottimizzata per SPE3R (default: aggressive). "
-             "aggressive=max quality, balanced=veloce, conservative=max detection, fast=debug"
+        default="validated",
+        choices=["aggressive", "balanced", "conservative", "fast", "validated"],
+        help="Configurazione COLMAP ottimizzata per SPE3R (default: validated). "
+             "validated=testata con successo (230/500 img), aggressive=max quality, "
+             "balanced=veloce, conservative=max detection, fast=debug"
     )
     
     parser.add_argument(

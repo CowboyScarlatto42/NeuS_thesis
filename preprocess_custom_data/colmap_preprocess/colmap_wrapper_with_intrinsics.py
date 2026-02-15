@@ -210,34 +210,45 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_ext
         '--image_path', os.path.join(basedir, 'images'),
         '--output_path', os.path.join(basedir, 'sparse'),
         '--Mapper.num_threads', '16',
-        
-        # === SPE3R OPTIMIZED MAPPER SETTINGS ===
-        # Initialization (pose randomizzate richiedono parametri più permissivi)
-        '--Mapper.init_min_tri_angle', '2.0',           # ⬇️ Da 4 a 2 (pose random)
-        '--Mapper.init_max_forward_motion', '0.95',
-        '--Mapper.init_min_num_inliers', '30',
-        
-        # Triangulation
-        '--Mapper.tri_min_angle', '1.5',
-        '--Mapper.tri_ignore_two_view_tracks', '0',     # Usa anche tracks a 2 viste
-        '--Mapper.tri_complete_max_reproj_error', '4.0',
-        
-        # Filtering
-        '--Mapper.filter_max_reproj_error', '4.0',
-        '--Mapper.filter_min_tri_angle', '1.5',
-        
-        # Other
-        '--Mapper.multiple_models', '0',
-        '--Mapper.extract_colors', '0',
-        '--Mapper.min_num_matches', '15',
     ]
     
-    # Se abbiamo imposto camera_params, blocca il refinement degli intrinseci
-    if camera_params is not None:
+    # Aggiungi mapper settings da colmap_extra_args se presenti
+    if colmap_extra_args and 'mapper' in colmap_extra_args:
+        mapper_args.extend(colmap_extra_args['mapper'])
+        print("🔧 Mapper: usando impostazioni custom")
+    else:
+        # Usa defaults ottimizzati per SPE3R
         mapper_args.extend([
-            '--Mapper.ba_refine_focal_length', '0',      # Non raffinare focal length
-            '--Mapper.ba_refine_principal_point', '0',   # Non raffinare principal point
-            '--Mapper.ba_refine_extra_params', '0',      # Non raffinare distorsione
+            # === INITIALIZATION (permissivo per pose random) ===
+            '--Mapper.init_min_tri_angle', '2.0',
+            '--Mapper.init_max_forward_motion', '0.95',
+            '--Mapper.init_min_num_inliers', '30',
+            
+            # === TRIANGULATION ===
+            '--Mapper.tri_min_angle', '1.5',
+            '--Mapper.tri_ignore_two_view_tracks', '0',
+            '--Mapper.tri_complete_max_reproj_error', '4.0',
+            
+            # === FILTERING ===
+            '--Mapper.filter_max_reproj_error', '4.0',
+            '--Mapper.filter_min_tri_angle', '1.5',
+            
+            # === OTHER ===
+            '--Mapper.multiple_models', '0',
+            '--Mapper.extract_colors', '0',
+            '--Mapper.min_num_matches', '15',
+        ])
+    
+    # Se abbiamo imposto camera_params, blocca il refinement degli intrinseci
+    # (sempre, indipendentemente da colmap_extra_args)
+    if camera_params is not None:
+        # Rimuovi eventuali flag di refinement già presenti
+        mapper_args = [arg for arg in mapper_args if 'ba_refine' not in arg]
+        
+        mapper_args.extend([
+            '--Mapper.ba_refine_focal_length', '0',
+            '--Mapper.ba_refine_principal_point', '0',
+            '--Mapper.ba_refine_extra_params', '0',
             '--Mapper.ba_local_max_num_iterations', '50',
             '--Mapper.ba_global_max_num_iterations', '100',
         ])
