@@ -13,7 +13,8 @@ import os
 import subprocess
 
 
-def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_extra_args=None):
+def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_extra_args=None, 
+               gpu_matching_only=False):
     """
     Esegue COLMAP con possibilità di imporre parametri camera.
     
@@ -36,6 +37,8 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_ext
                 'matcher': ['--Flag', 'value', ...]
             }
             Se None, usa default aggressivi per SIFT.
+        gpu_matching_only: Se True, usa CPU per extraction ma GPU per matching (default: False)
+                          Utile in ambienti headless come Colab dove GPU extraction fallisce
     """
     
     # Default aggressivi per SIFT se colmap_extra_args non è fornito
@@ -62,6 +65,15 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_ext
     # COLMAP usa Qt che cerca un display anche quando non necessario
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
     
+    # Determina uso GPU per feature extraction
+    use_gpu_extraction = use_gpu and not gpu_matching_only
+    use_gpu_match = use_gpu  # GPU matching funziona sempre (no OpenGL)
+    
+    if gpu_matching_only:
+        print("🔄 Modalità GPU SELETTIVA:")
+        print("   - Feature Extraction: CPU (evita errori OpenGL)")
+        print("   - Feature Matching: GPU (accelerazione CUDA)")
+    
     logfile_name = os.path.join(basedir, 'colmap_output.txt')
     logfile = open(logfile_name, 'w')
     
@@ -73,8 +85,8 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_ext
         '--ImageReader.single_camera', '1',  # ← UNA SOLA CAMERA per tutte le immagini
     ]
     
-    # GPU per feature extraction
-    if use_gpu:
+    # GPU per feature extraction (solo se non in modalità gpu_matching_only)
+    if use_gpu_extraction:
         feature_extractor_args.extend([
             '--SiftExtraction.use_gpu', '1',
         ])
@@ -83,7 +95,10 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_ext
         feature_extractor_args.extend([
             '--SiftExtraction.use_gpu', '0',
         ])
-        print("💻 Uso CPU per feature extraction")
+        if gpu_matching_only:
+            print("💻 CPU usata per feature extraction (GPU matching only mode)")
+        else:
+            print("💻 Uso CPU per feature extraction")
     
     # Imponi intrinseci se forniti (SPE3R case)
     if camera_params is not None:
@@ -157,12 +172,15 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_ext
             print("   python setup_vocab_tree.py --download --output vocab_tree.bin")
             print("   Poi passa nel colmap_extra_args['matcher']")
     
-    # GPU per matching
-    if use_gpu:
+    # GPU per matching (funziona sempre, anche in Colab)
+    if use_gpu_match:
         matcher_args.extend([
             '--SiftMatching.use_gpu', '1',
         ])
-        print("🎮 GPU abilitata per feature matching")
+        if gpu_matching_only:
+            print("🎮 GPU abilitata per feature matching (CUDA, no OpenGL)")
+        else:
+            print("🎮 GPU abilitata per feature matching")
     else:
         matcher_args.extend([
             '--SiftMatching.use_gpu', '0',
