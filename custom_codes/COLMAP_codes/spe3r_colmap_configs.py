@@ -30,7 +30,8 @@ SPE3R_AGGRESSIVE = {
         # === MULTI-SCALE ===
         '--SiftExtraction.first_octave', '-1',          # Inizia da risoluzione più alta
         '--SiftExtraction.num_octaves', '5',            # Più scale (default 4)
-        '--SiftExtraction.octave_resolution', '4',      # Più immagini per octave (default 3)
+        # NOTA: octave_resolution potrebbe non essere supportato in COLMAP vecchio
+        # '--SiftExtraction.octave_resolution', '4',    # Più immagini per octave (default 3)
         
         # === ADVANCED ===
         '--SiftExtraction.domain_size_pooling', '1',    # Migliora robustezza
@@ -38,14 +39,15 @@ SPE3R_AGGRESSIVE = {
         '--SiftExtraction.max_num_orientations', '2',   # Features con orientamenti multipli
         
         # === PREPROCESSING ===
-        '--ImageReader.camera_mask_path', '',           # No mask (sfondo già nero)
-        '--SiftExtraction.normalization', '1',          # Normalizza contrasto
+        # NOTA: Questi parametri sono disponibili solo in COLMAP recente (>3.7)
+        # '--ImageReader.camera_mask_path', '',         # No mask (sfondo già nero)
+        # '--SiftExtraction.normalization', '1',        # Normalizza contrasto
     ],
     
     'matcher': [
         # === MATCHING STRATEGY ===
         '--SiftMatching.guided_matching', '1',          # Re-match con geometric verification
-        '--SiftMatching.multiple_models', '0',          # Singolo modello (singolo satellite)
+        # '--SiftMatching.multiple_models', '0',        # Non disponibile in tutte le versioni
         
         # === THRESHOLDS ===
         '--SiftMatching.max_ratio', '0.85',             # ⬇️ Da 0.9 a 0.85 (più selettivo)
@@ -103,7 +105,7 @@ SPE3R_CONSERVATIVE = {
         '--SiftExtraction.edge_threshold', '20',
         '--SiftExtraction.first_octave', '-1',
         '--SiftExtraction.num_octaves', '6',            # 6 scale
-        '--SiftExtraction.octave_resolution', '5',
+        # '--SiftExtraction.octave_resolution', '5',    # Non supportato in COLMAP vecchio
         '--SiftExtraction.domain_size_pooling', '1',
         '--SiftExtraction.estimate_affine_shape', '1',
         '--SiftExtraction.max_num_orientations', '3',
