@@ -192,9 +192,26 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_ext
         '--image_path', os.path.join(basedir, 'images'),
         '--output_path', os.path.join(basedir, 'sparse'),
         '--Mapper.num_threads', '16',
-        '--Mapper.init_min_tri_angle', '4',
+        
+        # === SPE3R OPTIMIZED MAPPER SETTINGS ===
+        # Initialization (pose randomizzate richiedono parametri più permissivi)
+        '--Mapper.init_min_tri_angle', '2.0',           # ⬇️ Da 4 a 2 (pose random)
+        '--Mapper.init_max_forward_motion', '0.95',
+        '--Mapper.init_min_num_inliers', '30',
+        
+        # Triangulation
+        '--Mapper.tri_min_angle', '1.5',
+        '--Mapper.tri_ignore_two_view_tracks', '0',     # Usa anche tracks a 2 viste
+        '--Mapper.tri_complete_max_reproj_error', '4.0',
+        
+        # Filtering
+        '--Mapper.filter_max_reproj_error', '4.0',
+        '--Mapper.filter_min_tri_angle', '1.5',
+        
+        # Other
         '--Mapper.multiple_models', '0',
         '--Mapper.extract_colors', '0',
+        '--Mapper.min_num_matches', '15',
     ]
     
     # Se abbiamo imposto camera_params, blocca il refinement degli intrinseci
@@ -203,8 +220,15 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=True, colmap_ext
             '--Mapper.ba_refine_focal_length', '0',      # Non raffinare focal length
             '--Mapper.ba_refine_principal_point', '0',   # Non raffinare principal point
             '--Mapper.ba_refine_extra_params', '0',      # Non raffinare distorsione
+            '--Mapper.ba_local_max_num_iterations', '50',
+            '--Mapper.ba_global_max_num_iterations', '100',
         ])
         print("🔒 Mapper: refinement intrinseci DISABILITATO (parametri bloccati)")
+    else:
+        mapper_args.extend([
+            '--Mapper.ba_local_max_num_iterations', '25',
+            '--Mapper.ba_global_max_num_iterations', '50',
+        ])
 
     map_output = subprocess.check_output(
         mapper_args, 

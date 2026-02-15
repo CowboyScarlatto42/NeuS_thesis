@@ -175,9 +175,13 @@ def prepare_images(spe3r_path, satellite, output_path,
 
 
 def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True, 
-                                match_type='vocab_tree_matcher', vocab_tree_path=None):
+                                match_type='vocab_tree_matcher', vocab_tree_path=None,
+                                spe3r_config='aggressive'):
     """
     Lancia COLMAP usando il wrapper modificato di NeuS.
+    
+    Args:
+        spe3r_config: 'aggressive' (default), 'balanced', 'conservative', 'fast'
     """
     print("\n" + "="*70)
     print("ESECUZIONE COLMAP CON INTRINSECI IMPOSTI")
@@ -190,25 +194,130 @@ def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True,
     # Importa il wrapper modificato
     from colmap_wrapper_with_intrinsics import run_colmap
     
-    # Prepara colmap_extra_args con parametri aggressivi
-    colmap_extra_args = {
-        'feature_extractor': [
-            '--SiftExtraction.max_num_features', '20000',
-            '--SiftExtraction.peak_threshold', '0.002',
-            '--SiftExtraction.edge_threshold', '10',
-            '--SiftExtraction.first_octave', '-1',
-            '--SiftExtraction.domain_size_pooling', '1',
-            '--SiftExtraction.estimate_affine_shape', '1',
-        ],
-        'matcher': [
+    # === CONFIGURAZIONI OTTIMIZZATE PER SPE3R ===
+    # Importa le configurazioni dal file spe3r_colmap_configs.py
+    try:
+        # Prova a importare dal modulo (se nello stesso path)
+        from spe3r_colmap_configs import (
+            SPE3R_AGGRESSIVE, SPE3R_BALANCED, SPE3R_CONSERVATIVE, SPE3R_FAST,
+            SPE3R_MAPPER_SETTINGS, SPE3R_VOCAB_TREE_SETTINGS
+        )
+        print(f"📋 Configurazioni SPE3R caricate da spe3r_colmap_configs.py")
+    except ImportError:
+        # Fallback: usa configurazioni inline
+        print("⚠️  spe3r_colmap_configs.py non trovato, uso configurazioni inline")
+        
+        SPE3R_AGGRESSIVE = {
+            'feature_extractor': [
+                '--SiftExtraction.max_num_features', '30000',
+                '--SiftExtraction.peak_threshold', '0.001',
+                '--SiftExtraction.edge_threshold', '15',
+                '--SiftExtraction.first_octave', '-1',
+                '--SiftExtraction.num_octaves', '5',
+                '--SiftExtraction.octave_resolution', '4',
+                '--SiftExtraction.domain_size_pooling', '1',
+                '--SiftExtraction.estimate_affine_shape', '1',
+                '--SiftExtraction.max_num_orientations', '2',
+            ],
+            'matcher': [
+                '--SiftMatching.guided_matching', '1',
+                '--SiftMatching.max_ratio', '0.85',
+                '--SiftMatching.max_distance', '0.75',
+                '--SiftMatching.cross_check', '1',
+                '--SiftMatching.max_error', '4.0',
+                '--SiftMatching.min_num_inliers', '15',
+                '--SiftMatching.confidence', '0.999',
+                '--SiftMatching.max_num_trials', '10000',
+                '--SiftMatching.min_inlier_ratio', '0.25',
+            ],
+        }
+        
+        SPE3R_BALANCED = {
+            'feature_extractor': [
+                '--SiftExtraction.max_num_features', '20000',
+                '--SiftExtraction.peak_threshold', '0.002',
+                '--SiftExtraction.edge_threshold', '12',
+                '--SiftExtraction.first_octave', '-1',
+                '--SiftExtraction.num_octaves', '4',
+                '--SiftExtraction.domain_size_pooling', '1',
+                '--SiftExtraction.estimate_affine_shape', '1',
+            ],
+            'matcher': [
+                '--SiftMatching.guided_matching', '1',
+                '--SiftMatching.max_ratio', '0.8',
+                '--SiftMatching.max_distance', '0.7',
+                '--SiftMatching.cross_check', '1',
+                '--SiftMatching.min_num_inliers', '15',
+                '--SiftMatching.confidence', '0.999',
+            ],
+        }
+        
+        SPE3R_CONSERVATIVE = {
+            'feature_extractor': [
+                '--SiftExtraction.max_num_features', '40000',
+                '--SiftExtraction.peak_threshold', '0.0008',
+                '--SiftExtraction.edge_threshold', '20',
+                '--SiftExtraction.first_octave', '-1',
+                '--SiftExtraction.num_octaves', '6',
+                '--SiftExtraction.octave_resolution', '5',
+                '--SiftExtraction.domain_size_pooling', '1',
+                '--SiftExtraction.estimate_affine_shape', '1',
+                '--SiftExtraction.max_num_orientations', '3',
+            ],
+            'matcher': [
+                '--SiftMatching.guided_matching', '1',
+                '--SiftMatching.max_ratio', '0.75',
+                '--SiftMatching.max_distance', '0.65',
+                '--SiftMatching.cross_check', '1',
+                '--SiftMatching.min_num_inliers', '20',
+                '--SiftMatching.confidence', '0.9999',
+                '--SiftMatching.max_num_trials', '20000',
+                '--SiftMatching.min_inlier_ratio', '0.3',
+            ],
+        }
+        
+        SPE3R_FAST = {
+            'feature_extractor': [
+                '--SiftExtraction.max_num_features', '10000',
+                '--SiftExtraction.peak_threshold', '0.004',
+                '--SiftExtraction.edge_threshold', '10',
+                '--SiftExtraction.first_octave', '0',
+            ],
+            'matcher': [
+                '--SiftMatching.max_ratio', '0.8',
+                '--SiftMatching.cross_check', '1',
+            ],
+        }
+        
+        SPE3R_VOCAB_TREE_SETTINGS = [
+            '--VocabTreeMatching.num_images', '100',
+            '--VocabTreeMatching.num_nearest_neighbors', '5',
+            '--VocabTreeMatching.max_num_features', '-1',
             '--SiftMatching.guided_matching', '1',
-            '--SiftMatching.max_ratio', '0.9',
-            '--SiftMatching.max_distance', '0.8',
+            '--SiftMatching.max_ratio', '0.85',
+            '--SiftMatching.max_distance', '0.75',
             '--SiftMatching.cross_check', '1',
-        ],
+        ]
+    
+    # Seleziona configurazione
+    config_map = {
+        'aggressive': SPE3R_AGGRESSIVE,
+        'balanced': SPE3R_BALANCED,
+        'conservative': SPE3R_CONSERVATIVE,
+        'fast': SPE3R_FAST,
     }
     
-    # Se usiamo vocab_tree_matcher, aggiungi vocab_tree_path
+    selected_config = config_map.get(spe3r_config.lower(), SPE3R_AGGRESSIVE)
+    
+    print(f"🔧 Configurazione SPE3R: {spe3r_config.upper()}")
+    
+    # Prepara colmap_extra_args
+    colmap_extra_args = {
+        'feature_extractor': selected_config['feature_extractor'].copy(),
+        'matcher': selected_config['matcher'].copy(),
+    }
+    
+    # Se usiamo vocab_tree_matcher, sostituisci i matcher settings
     if match_type == 'vocab_tree_matcher':
         if vocab_tree_path is None:
             print("\n⚠️  ERRORE: vocab_tree_matcher richiede --vocab-tree-path")
@@ -217,15 +326,27 @@ def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True,
             print("\nPoi riavvia con:")
             print(f"  --vocab-tree-path vocab_tree.bin")
             print("\nOppure usa un matcher diverso:")
-            print("  --match-type sequential_matcher  (consigliato per <1000 immagini)")
-            print("  --match-type exhaustive_matcher  (lento ma accurato)")
+            print("  --match-type exhaustive_matcher  (consigliato per SPE3R con pose random)")
             sys.exit(1)
         
-        # Aggiungi vocab tree path e parametri specifici
+        # Usa vocab tree settings invece dei matcher settings standard
+        try:
+            colmap_extra_args['matcher'] = SPE3R_VOCAB_TREE_SETTINGS.copy()
+        except NameError:
+            # Fallback se non importato
+            colmap_extra_args['matcher'] = [
+                '--VocabTreeMatching.num_images', '100',
+                '--VocabTreeMatching.num_nearest_neighbors', '5',
+                '--VocabTreeMatching.max_num_features', '-1',
+                '--SiftMatching.guided_matching', '1',
+                '--SiftMatching.max_ratio', '0.85',
+                '--SiftMatching.max_distance', '0.75',
+                '--SiftMatching.cross_check', '1',
+            ]
+        
+        # Aggiungi vocab tree path
         colmap_extra_args['matcher'].extend([
             '--VocabTreeMatching.vocab_tree_path', str(vocab_tree_path),
-            '--VocabTreeMatching.num_images', '100',  # Match con top 100 immagini simili
-            '--VocabTreeMatching.max_num_features', '-1',  # Usa tutte le features
         ])
         print(f"🌳 Vocabulary tree: {vocab_tree_path}")
     
@@ -344,6 +465,14 @@ def main():
     )
     
     parser.add_argument(
+        "--spe3r-config",
+        default="aggressive",
+        choices=["aggressive", "balanced", "conservative", "fast"],
+        help="Configurazione COLMAP ottimizzata per SPE3R (default: aggressive). "
+             "aggressive=max quality, balanced=veloce, conservative=max detection, fast=debug"
+    )
+    
+    parser.add_argument(
         "--skip-colmap",
         action="store_true",
         help="Salta COLMAP (Step 1-2), esegui solo generazione poses (Step 3). "
@@ -426,7 +555,8 @@ def main():
             camera_params=camera_params,
             use_gpu=args.use_gpu,
             match_type=args.match_type,
-            vocab_tree_path=args.vocab_tree_path
+            vocab_tree_path=args.vocab_tree_path,
+            spe3r_config=args.spe3r_config
         )
     
     # Step 3: Genera poses.npy e sparse_points.ply
