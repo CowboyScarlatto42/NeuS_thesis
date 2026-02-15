@@ -32,7 +32,7 @@ SPE3R_VALIDATED = {
     'matcher': [
         # === MATCHING STRATEGY ===
         '--SiftMatching.guided_matching', '1',          # CRITICO: Re-match guidato
-        '--SiftMatching.max_num_features', '50000',     # CRITICO: Più match possibili
+        #'--SiftMatching.max_num_features', '50000',     # CRITICO: Più match possibili
         
         # === THRESHOLDS (Standard, funzionano bene) ===
         '--SiftMatching.max_ratio', '0.8',

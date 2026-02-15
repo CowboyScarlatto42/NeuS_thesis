@@ -327,7 +327,7 @@ def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True,
             ],
             'matcher': [
                 '--SiftMatching.guided_matching', '1',          # CRITICO
-                '--SiftMatching.max_num_features', '50000',     # CRITICO  
+                #'--SiftMatching.max_num_features', '50000',     # CRITICO  
                 '--SiftMatching.max_ratio', '0.8',
                 '--SiftMatching.max_distance', '0.7',
                 '--SiftMatching.cross_check', '1',
