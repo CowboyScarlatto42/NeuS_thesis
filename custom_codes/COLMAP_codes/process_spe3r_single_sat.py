@@ -187,6 +187,33 @@ def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True,
     print("ESECUZIONE COLMAP CON INTRINSECI IMPOSTI")
     print("="*70)
     
+    # === RILEVAMENTO AMBIENTE COLAB ===
+    def is_colab():
+        """Rileva se siamo in Google Colab"""
+        # Check 1: Path /content esiste
+        if os.path.exists('/content'):
+            return True
+        # Check 2: google.colab importabile
+        try:
+            import google.colab
+            return True
+        except ImportError:
+            pass
+        return False
+    
+    # Determina se usare GPU selettiva (CPU per extraction, GPU per matching)
+    gpu_matching_only = False
+    if is_colab() and use_gpu:
+        gpu_matching_only = True
+        print("\n" + "="*70)
+        print("🌐 GOOGLE COLAB RILEVATO")
+        print("="*70)
+        print("GPU Feature Extraction non funziona in Colab (errore OpenGL).")
+        print("🔄 Attivando modalità GPU SELETTIVA:")
+        print("   ✓ Feature Extraction: CPU")
+        print("   ✓ Feature Matching: GPU (CUDA)")
+        print("="*70 + "\n")
+    
     # Aggiungi NeuS al path Python
     neus_preprocess_path = Path(neus_path) / "preprocess_custom_data" / "colmap_preprocess"
     sys.path.insert(0, str(neus_preprocess_path))
@@ -356,7 +383,8 @@ def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True,
         match_type=match_type,
         camera_params=camera_params,
         use_gpu=use_gpu,
-        colmap_extra_args=colmap_extra_args
+        colmap_extra_args=colmap_extra_args,
+        gpu_matching_only=gpu_matching_only
     )
     
     print("="*70)
@@ -378,11 +406,62 @@ def generate_poses(basedir, neus_path):
     
     from pose_utils import load_colmap_data, save_poses
     
-    poses, pts3d, perm, id_to_idx = load_colmap_data(str(basedir))
-    save_poses(str(basedir), poses, pts3d, perm, id_to_idx)
+    # Prova a caricare dati COLMAP - gestisci diverse versioni di load_colmap_data
+    try:
+        # Versione con 4 return values
+        result = load_colmap_data(str(basedir))
+        if len(result) == 4:
+            poses, pts3d, perm, id_to_idx = result
+        elif len(result) == 3:
+            # Versione con 3 return values (senza id_to_idx)
+            poses, pts3d, perm = result
+            id_to_idx = None
+        else:
+            raise ValueError(f"load_colmap_data returned {len(result)} values, expected 3 or 4")
+    except Exception as e:
+        print(f"❌ Errore nel caricamento dati COLMAP: {e}")
+        raise
+    
+    # Salva poses
+    if id_to_idx is not None:
+        save_poses(str(basedir), poses, pts3d, perm, id_to_idx)
+    else:
+        # Versione senza id_to_idx
+        save_poses(str(basedir), poses, pts3d, perm)
     
     print(f"✅ poses.npy creato in: {basedir}")
     print(f"✅ sparse_points.ply creato in: {basedir}")
+    
+    # Stampa statistiche
+    print(f"\n📊 Statistiche:")
+    print(f"   Immagini registrate: {len(poses)}")
+    print(f"   Punti 3D: {len(pts3d)}")
+    
+    # Warning se troppo poche immagini
+    sparse_dir = Path(basedir) / "sparse" / "0"
+    if sparse_dir.exists():
+        import struct
+        # Leggi numero totale immagini dal database
+        images_bin = sparse_dir / "images.bin"
+        if images_bin.exists():
+            with open(images_bin, 'rb') as f:
+                num_reg_images = struct.unpack('Q', f.read(8))[0]
+                print(f"   Immagini nel database: {num_reg_images}")
+    
+    if len(poses) < 10:
+        print(f"\n⚠️  ATTENZIONE: Solo {len(poses)} immagini registrate!")
+        print(f"   Possibili cause:")
+        print(f"   - Pochi match tra immagini")
+        print(f"   - Threshold troppo stringenti")
+        print(f"   - Problemi con feature detection")
+        print(f"\n💡 Soluzioni:")
+        print(f"   1. Controlla database_stats:")
+        print(f"      colmap database_stats --database_path {basedir}/database.db")
+        print(f"   2. Prova configurazione più aggressiva:")
+        print(f"      --spe3r-config aggressive")
+        print(f"   3. Aumenta numero immagini:")
+        print(f"      --num-images 100")
+    
     print("="*70)
 
 
