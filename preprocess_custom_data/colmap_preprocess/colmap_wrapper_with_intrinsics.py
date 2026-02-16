@@ -11,7 +11,7 @@ import os
 import subprocess
 
 
-def run_colmap(basedir, match_type, camera_params=None):
+def run_colmap(basedir, match_type, camera_params=None, use_gpu=False):
     """
     Esegue COLMAP con parametri VALIDATI che funzionano.
     
@@ -26,6 +26,7 @@ def run_colmap(basedir, match_type, camera_params=None):
                 'cx': 128.0,
                 'cy': 128.0
             }
+        use_gpu: Se True usa GPU, altrimenti CPU (default: False - CPU è più stabile)
     """
     
     # Fix per ambienti headless (Colab)
@@ -90,8 +91,9 @@ def run_colmap(basedir, match_type, camera_params=None):
         print("⚠️  Intrinseci NON imposti - COLMAP li stimerà")
     
     # PARAMETRI VALIDATI CHE FUNZIONANO
+    gpu_flag = '1' if use_gpu else '0'
     feature_extractor_args.extend([
-        '--SiftExtraction.use_gpu', '0',           # CPU (funziona ovunque)
+        '--SiftExtraction.use_gpu', gpu_flag,
         '--SiftExtraction.num_threads', '2',
         '--SiftExtraction.max_num_features', '20000',
         '--SiftExtraction.peak_threshold', '0.004',  # ← CRITICO: permissivo
@@ -100,6 +102,7 @@ def run_colmap(basedir, match_type, camera_params=None):
     ])
     
     print("\n[1/3] Feature Extraction...")
+    print(f"   - GPU: {'ON' if use_gpu else 'OFF (CPU)'}")
     print("   - peak_threshold: 0.004 (permissivo)")
     print("   - edge_threshold: 20 (permissivo)")
     print("   - max_features: 20000")
@@ -117,12 +120,13 @@ def run_colmap(basedir, match_type, camera_params=None):
     matcher_args = [
         'colmap', match_type, 
         '--database_path', os.path.join(basedir, 'database.db'),
-        '--SiftMatching.use_gpu', '0',           # CPU
+        '--SiftMatching.use_gpu', gpu_flag,
         '--SiftMatching.guided_matching', '1',
         '--SiftMatching.max_num_matches', '50000',
     ]
     
     print("\n[2/3] Feature Matching...")
+    print(f"   - GPU: {'ON' if use_gpu else 'OFF (CPU)'}")
     print(f"   - Tipo: {match_type}")
     print("   - guided_matching: ON")
     

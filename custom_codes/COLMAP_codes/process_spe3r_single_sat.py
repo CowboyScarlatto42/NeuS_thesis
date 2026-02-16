@@ -154,9 +154,12 @@ def prepare_images(spe3r_path, satellite, output_path,
     return len(selected_files)
 
 
-def run_colmap_simple(basedir, neus_path, camera_params, match_type='exhaustive_matcher'):
+def run_colmap_simple(basedir, neus_path, camera_params, match_type='exhaustive_matcher', use_gpu=False):
     """
     Lancia COLMAP con parametri VALIDATI che funzionano.
+    
+    Args:
+        use_gpu: Se True usa GPU, altrimenti CPU (default: False)
     """
     print("\n" + "="*70)
     print("ESECUZIONE COLMAP CON PARAMETRI VALIDATI")
@@ -167,13 +170,14 @@ def run_colmap_simple(basedir, neus_path, camera_params, match_type='exhaustive_
     sys.path.insert(0, str(neus_preprocess_path))
     
     # Importa il wrapper semplificato
-    from colmap_wrapper_simple import run_colmap
+    from colmap_wrapper_with_intrinsics import run_colmap
     
     # Esegui COLMAP
     run_colmap(
         basedir=basedir,
         match_type=match_type,
-        camera_params=camera_params
+        camera_params=camera_params,
+        use_gpu=use_gpu
     )
     
     print("\n✅ COLMAP completato")
@@ -303,6 +307,12 @@ def main():
     )
     
     parser.add_argument(
+        "--use-gpu",
+        action="store_true",
+        help="Usa GPU per COLMAP (default: CPU - più stabile)"
+    )
+    
+    parser.add_argument(
         "--skip-colmap",
         action="store_true",
         help="Salta COLMAP, esegui solo generazione poses (usa se COLMAP già completato)"
@@ -321,6 +331,7 @@ def main():
     print(f"Output: {args.output}")
     print(f"NeuS path: {args.neus_path}")
     print(f"Range immagini: {args.start_idx} → {args.start_idx + args.num_images - 1}")
+    print(f"GPU: {'ON' if args.use_gpu else 'OFF (CPU)'}")
     print(f"Matcher: {args.match_type}")
     print("="*70)
     
@@ -382,7 +393,8 @@ def main():
             basedir=output_path,
             neus_path=args.neus_path,
             camera_params=camera_params,
-            match_type=args.match_type
+            match_type=args.match_type,
+            use_gpu=args.use_gpu
         )
     
     # Step 3: Genera poses
