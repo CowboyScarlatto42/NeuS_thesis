@@ -1,23 +1,21 @@
 """
-process_spe3r_single_sat.py
+process_spe3r_single_sat_simple.py
 
-Versione modificata per dataset SPE3R con SINGOLO satellite.
-- Legge intrinseci da camera.json
-- Cerca immagini in {satellite}_images/
-- Default: prime 500 immagini (sfondo nero)
+Versione SEMPLIFICATA per dataset SPE3R con SINGOLO satellite.
+Usa SOLO i parametri COLMAP validati (quelli che funzionano).
+
+NON ci sono configurazioni multiple da scegliere.
 
 Struttura attesa:
     spe3r_path/
     ├── camera.json
     ├── {satellite}_images/
     │   ├── img000001.jpg
-    │   ├── img000002.jpg
     │   └── ...
-    ├── {satellite}_masks/
-    └── labels.json
+    └── {satellite}_masks/
 
 Uso:
-    python process_spe3r_single_sat.py \
+    python process_spe3r_single_sat_simple.py \
         --spe3r-path /path/to/SPE3R/hst \
         --satellite hst \
         --output /tmp/colmap_test \
@@ -38,25 +36,8 @@ def load_camera_params(spe3r_path):
     Carica parametri camera da camera.json.
     
     Supporta due formati:
-    
-    1. Formato con cameraMatrix (SPE3R standard):
-    {
-        "Nu": 256,
-        "Nv": 256,
-        "cameraMatrix": [
-            [fx, 0,  cx],
-            [0,  fy, cy],
-            [0,  0,  1]
-        ]
-    }
-    
-    2. Formato flat:
-    {
-        "fx": 3003.0,
-        "fy": 3003.0,
-        "cx": 128.0,
-        "cy": 128.0
-    }
+    1. Formato con cameraMatrix (SPE3R standard)
+    2. Formato flat con fx, fy, cx, cy
     
     Returns:
         dict con fx, fy, cx, cy
@@ -71,7 +52,7 @@ def load_camera_params(spe3r_path):
     
     # Estrai parametri
     if 'cameraMatrix' in camera_data:
-        # Formato SPE3R con cameraMatrix (OpenCV style)
+        # Formato SPE3R con cameraMatrix
         K = camera_data['cameraMatrix']
         fx = K[0][0]
         fy = K[1][1]
@@ -81,7 +62,7 @@ def load_camera_params(spe3r_path):
         width = camera_data.get('Nu', None)
         height = camera_data.get('Nv', None)
         
-        print(f"📷 Caricati parametri da camera.json (cameraMatrix):")
+        print(f"📷 Parametri da camera.json (cameraMatrix):")
         print(f"   fx: {fx}")
         print(f"   fy: {fy}")
         print(f"   cx: {cx}")
@@ -96,7 +77,7 @@ def load_camera_params(spe3r_path):
         cx = camera_data['cx']
         cy = camera_data['cy']
         
-        print(f"📷 Caricati parametri da camera.json (flat):")
+        print(f"📷 Parametri da camera.json (flat):")
         print(f"   fx: {fx}")
         print(f"   fy: {fy}")
         print(f"   cx: {cx}")
@@ -122,7 +103,7 @@ def prepare_images(spe3r_path, satellite, output_path,
     
     Args:
         start_idx: Indice iniziale (default: 1, per img000001)
-        num_images: Numero di immagini da copiare (default: 500, solo sfondo nero)
+        num_images: Numero di immagini da copiare (default: 500)
     """
     spe3r_path = Path(spe3r_path)
     output_path = Path(output_path)
@@ -148,7 +129,6 @@ def prepare_images(spe3r_path, satellite, output_path,
     print(f"📁 Trovate {len(all_image_files)} immagini totali in {source_dir}")
     
     # Seleziona range
-    # Converti start_idx (1-based) a 0-based per Python
     end_idx = start_idx - 1 + num_images
     selected_files = all_image_files[start_idx - 1:end_idx]
     
@@ -174,343 +154,100 @@ def prepare_images(spe3r_path, satellite, output_path,
     return len(selected_files)
 
 
-def run_colmap_with_intrinsics(basedir, neus_path, camera_params, use_gpu=True, 
-                                match_type='vocab_tree_matcher', vocab_tree_path=None,
-                                spe3r_config='aggressive'):
+def run_colmap_simple(basedir, neus_path, camera_params, match_type='exhaustive_matcher'):
     """
-    Lancia COLMAP usando il wrapper modificato di NeuS.
-    
-    Args:
-        spe3r_config: 'aggressive' (default), 'balanced', 'conservative', 'fast'
+    Lancia COLMAP con parametri VALIDATI che funzionano.
     """
     print("\n" + "="*70)
-    print("ESECUZIONE COLMAP CON INTRINSECI IMPOSTI")
+    print("ESECUZIONE COLMAP CON PARAMETRI VALIDATI")
     print("="*70)
-    
-    # === RILEVAMENTO AMBIENTE COLAB ===
-    def is_colab():
-        """Rileva se siamo in Google Colab"""
-        # Check 1: Path /content esiste
-        if os.path.exists('/content'):
-            return True
-        # Check 2: google.colab importabile
-        try:
-            import google.colab
-            return True
-        except ImportError:
-            pass
-        return False
-    
-    # Determina se usare GPU selettiva (CPU per extraction, GPU per matching)
-    gpu_matching_only = False
-    if is_colab() and use_gpu:
-        gpu_matching_only = True
-        print("\n" + "="*70)
-        print("🌐 GOOGLE COLAB RILEVATO")
-        print("="*70)
-        print("GPU Feature Extraction non funziona in Colab (errore OpenGL).")
-        print("🔄 Attivando modalità GPU SELETTIVA:")
-        print("   ✓ Feature Extraction: CPU")
-        print("   ✓ Feature Matching: GPU (CUDA)")
-        print("="*70 + "\n")
     
     # Aggiungi NeuS al path Python
     neus_preprocess_path = Path(neus_path) / "preprocess_custom_data" / "colmap_preprocess"
     sys.path.insert(0, str(neus_preprocess_path))
     
-    # Importa il wrapper modificato
-    from colmap_wrapper_with_intrinsics import run_colmap
-    
-    # === CONFIGURAZIONI OTTIMIZZATE PER SPE3R ===
-    # Importa le configurazioni dal file spe3r_colmap_configs.py
-    try:
-        # Prova a importare dal modulo (se nello stesso path)
-        from spe3r_colmap_configs import (
-            SPE3R_AGGRESSIVE, SPE3R_BALANCED, SPE3R_CONSERVATIVE, SPE3R_FAST,
-            SPE3R_MAPPER_SETTINGS, SPE3R_VOCAB_TREE_SETTINGS
-        )
-        print(f"📋 Configurazioni SPE3R caricate da spe3r_colmap_configs.py")
-    except ImportError:
-        # Fallback: usa configurazioni inline
-        print("⚠️  spe3r_colmap_configs.py non trovato, uso configurazioni inline")
-        
-        SPE3R_AGGRESSIVE = {
-            'feature_extractor': [
-                '--SiftExtraction.max_num_features', '30000',
-                '--SiftExtraction.peak_threshold', '0.001',
-                '--SiftExtraction.edge_threshold', '15',
-                '--SiftExtraction.first_octave', '-1',
-                '--SiftExtraction.num_octaves', '5',
-                '--SiftExtraction.domain_size_pooling', '1',
-                '--SiftExtraction.estimate_affine_shape', '1',
-                '--SiftExtraction.max_num_orientations', '2',
-            ],
-            'matcher': [
-                '--SiftMatching.guided_matching', '1',
-                '--SiftMatching.max_ratio', '0.85',
-                '--SiftMatching.max_distance', '0.75',
-                '--SiftMatching.cross_check', '1',
-                '--SiftMatching.max_error', '4.0',
-                '--SiftMatching.min_num_inliers', '15',
-                '--SiftMatching.confidence', '0.999',
-                '--SiftMatching.max_num_trials', '10000',
-                '--SiftMatching.min_inlier_ratio', '0.25',
-            ],
-        }
-        
-        SPE3R_BALANCED = {
-            'feature_extractor': [
-                '--SiftExtraction.max_num_features', '20000',
-                '--SiftExtraction.peak_threshold', '0.002',
-                '--SiftExtraction.edge_threshold', '12',
-                '--SiftExtraction.first_octave', '-1',
-                '--SiftExtraction.num_octaves', '4',
-                '--SiftExtraction.domain_size_pooling', '1',
-                '--SiftExtraction.estimate_affine_shape', '1',
-            ],
-            'matcher': [
-                '--SiftMatching.guided_matching', '1',
-                '--SiftMatching.max_ratio', '0.8',
-                '--SiftMatching.max_distance', '0.7',
-                '--SiftMatching.cross_check', '1',
-                '--SiftMatching.min_num_inliers', '15',
-                '--SiftMatching.confidence', '0.999',
-            ],
-        }
-        
-        SPE3R_CONSERVATIVE = {
-            'feature_extractor': [
-                '--SiftExtraction.max_num_features', '40000',
-                '--SiftExtraction.peak_threshold', '0.0008',
-                '--SiftExtraction.edge_threshold', '20',
-                '--SiftExtraction.first_octave', '-1',
-                '--SiftExtraction.num_octaves', '6',
-                '--SiftExtraction.domain_size_pooling', '1',
-                '--SiftExtraction.estimate_affine_shape', '1',
-                '--SiftExtraction.max_num_orientations', '3',
-            ],
-            'matcher': [
-                '--SiftMatching.guided_matching', '1',
-                '--SiftMatching.max_ratio', '0.75',
-                '--SiftMatching.max_distance', '0.65',
-                '--SiftMatching.cross_check', '1',
-                '--SiftMatching.min_num_inliers', '20',
-                '--SiftMatching.confidence', '0.9999',
-                '--SiftMatching.max_num_trials', '20000',
-                '--SiftMatching.min_inlier_ratio', '0.3',
-            ],
-        }
-        
-        SPE3R_FAST = {
-            'feature_extractor': [
-                '--SiftExtraction.max_num_features', '10000',
-                '--SiftExtraction.peak_threshold', '0.004',
-                '--SiftExtraction.edge_threshold', '10',
-                '--SiftExtraction.first_octave', '0',
-            ],
-            'matcher': [
-                '--SiftMatching.max_ratio', '0.8',
-                '--SiftMatching.cross_check', '1',
-            ],
-        }
-        
-        # Config VALIDATED - Testata con successo: 230/500 immagini registrate
-        SPE3R_VALIDATED = {
-            'feature_extractor': [
-                '--SiftExtraction.max_num_features', '20000',
-                '--SiftExtraction.peak_threshold', '0.004',
-                '--SiftExtraction.edge_threshold', '20',
-                '--SiftExtraction.first_octave', '-1',
-                '--SiftExtraction.num_octaves', '4',
-                '--SiftExtraction.domain_size_pooling', '1',
-                '--SiftExtraction.estimate_affine_shape', '1',
-            ],
-            'matcher': [
-                '--SiftMatching.guided_matching', '1',          # CRITICO
-                #'--SiftMatching.max_num_features', '50000',     # CRITICO  
-                '--SiftMatching.max_ratio', '0.8',
-                '--SiftMatching.max_distance', '0.7',
-                '--SiftMatching.cross_check', '1',
-                '--SiftMatching.max_error', '4.0',
-                '--SiftMatching.min_num_inliers', '15',
-                '--SiftMatching.confidence', '0.999',
-                '--SiftMatching.max_num_trials', '10000',
-            ],
-            'mapper': [
-                # INITIALIZATION
-                '--Mapper.init_min_tri_angle', '2.0',
-                '--Mapper.init_min_num_inliers', '30',
-                '--Mapper.init_max_forward_motion', '0.95',
-                # REGISTRATION (Molto permissivo per SPE3R!)
-                '--Mapper.abs_pose_min_num_inliers', '15',      # CRITICO
-                '--Mapper.abs_pose_min_inlier_ratio', '0.05',   # CRITICO: solo 5%!
-                # TRIANGULATION
-                '--Mapper.tri_min_angle', '1.5',
-                '--Mapper.tri_ignore_two_view_tracks', '0',
-                '--Mapper.tri_complete_max_reproj_error', '4.0',
-                # FILTERING
-                '--Mapper.filter_max_reproj_error', '4.0',
-                '--Mapper.filter_min_tri_angle', '1.5',
-                # OTHER
-                '--Mapper.multiple_models', '0',
-                '--Mapper.extract_colors', '0',
-                '--Mapper.min_num_matches', '15',
-            ],
-        }
-        
-        SPE3R_VOCAB_TREE_SETTINGS = [
-            '--VocabTreeMatching.num_images', '100',
-            '--VocabTreeMatching.num_nearest_neighbors', '5',
-            '--VocabTreeMatching.max_num_features', '-1',
-            '--SiftMatching.guided_matching', '1',
-            '--SiftMatching.max_ratio', '0.85',
-            '--SiftMatching.max_distance', '0.75',
-            '--SiftMatching.cross_check', '1',
-        ]
-    
-    # Seleziona configurazione
-    config_map = {
-        'aggressive': SPE3R_AGGRESSIVE,
-        'balanced': SPE3R_BALANCED,
-        'conservative': SPE3R_CONSERVATIVE,
-        'fast': SPE3R_FAST,
-        'validated': SPE3R_VALIDATED,  # User-tested: 230/500 immagini!
-    }
-    
-    selected_config = config_map.get(spe3r_config.lower(), SPE3R_AGGRESSIVE)
-    
-    print(f"🔧 Configurazione SPE3R: {spe3r_config.upper()}")
-    
-    # Prepara colmap_extra_args
-    colmap_extra_args = {
-        'feature_extractor': selected_config['feature_extractor'].copy(),
-        'matcher': selected_config['matcher'].copy(),
-    }
-    
-    # Se usiamo vocab_tree_matcher, sostituisci i matcher settings
-    if match_type == 'vocab_tree_matcher':
-        if vocab_tree_path is None:
-            print("\n⚠️  ERRORE: vocab_tree_matcher richiede --vocab-tree-path")
-            print("Scarica il vocabulary tree con:")
-            print("  python setup_vocab_tree.py --download --output vocab_tree.bin")
-            print("\nPoi riavvia con:")
-            print(f"  --vocab-tree-path vocab_tree.bin")
-            print("\nOppure usa un matcher diverso:")
-            print("  --match-type exhaustive_matcher  (consigliato per SPE3R con pose random)")
-            sys.exit(1)
-        
-        # Usa vocab tree settings invece dei matcher settings standard
-        try:
-            colmap_extra_args['matcher'] = SPE3R_VOCAB_TREE_SETTINGS.copy()
-        except NameError:
-            # Fallback se non importato
-            colmap_extra_args['matcher'] = [
-                '--VocabTreeMatching.num_images', '100',
-                '--VocabTreeMatching.num_nearest_neighbors', '5',
-                '--VocabTreeMatching.max_num_features', '-1',
-                '--SiftMatching.guided_matching', '1',
-                '--SiftMatching.max_ratio', '0.85',
-                '--SiftMatching.max_distance', '0.75',
-                '--SiftMatching.cross_check', '1',
-            ]
-        
-        # Aggiungi vocab tree path
-        colmap_extra_args['matcher'].extend([
-            '--VocabTreeMatching.vocab_tree_path', str(vocab_tree_path),
-        ])
-        print(f"🌳 Vocabulary tree: {vocab_tree_path}")
+    # Importa il wrapper semplificato
+    from colmap_wrapper_simple import run_colmap
     
     # Esegui COLMAP
     run_colmap(
-        basedir=str(basedir),
+        basedir=basedir,
         match_type=match_type,
-        camera_params=camera_params,
-        use_gpu=use_gpu,
-        colmap_extra_args=colmap_extra_args,
-        gpu_matching_only=gpu_matching_only
+        camera_params=camera_params
     )
     
-    print("="*70)
-    print("✅ COLMAP COMPLETATO")
-    print("="*70)
+    print("\n✅ COLMAP completato")
 
 
 def generate_poses(basedir, neus_path):
     """
-    Genera poses.npy usando pose_utils.py di NeuS.
-    Questo genera anche sparse_points.ply
+    Genera poses.npy e sparse_points.ply usando gli script NeuS.
     """
-    print("\n" + "="*70)
-    print("GENERAZIONE POSES.NPY e SPARSE_POINTS.PLY")
-    print("="*70)
+    import subprocess
+    import numpy as np
     
     neus_preprocess_path = Path(neus_path) / "preprocess_custom_data" / "colmap_preprocess"
-    sys.path.insert(0, str(neus_preprocess_path))
+    imgs2poses_script = neus_preprocess_path / "imgs2poses.py"
     
-    from pose_utils import load_colmap_data, save_poses
+    if not imgs2poses_script.exists():
+        raise FileNotFoundError(f"Script non trovato: {imgs2poses_script}")
     
-    # Prova a caricare dati COLMAP - gestisci diverse versioni di load_colmap_data
-    try:
-        # Versione con 4 return values
-        result = load_colmap_data(str(basedir))
-        if len(result) == 4:
-            poses, pts3d, perm, id_to_idx = result
-        elif len(result) == 3:
-            # Versione con 3 return values (senza id_to_idx)
-            poses, pts3d, perm = result
-            id_to_idx = None
-        else:
-            raise ValueError(f"load_colmap_data returned {len(result)} values, expected 3 or 4")
-    except Exception as e:
-        print(f"❌ Errore nel caricamento dati COLMAP: {e}")
-        raise
+    print(f"📝 Eseguendo imgs2poses.py...")
+    result = subprocess.run(
+        ['python', str(imgs2poses_script), str(basedir), '--match_type', 'exhaustive_matcher'],
+        cwd=str(neus_preprocess_path),
+        capture_output=True,
+        text=True
+    )
     
-    # Salva poses
-    if id_to_idx is not None:
-        save_poses(str(basedir), poses, pts3d, perm, id_to_idx)
-    else:
-        # Versione senza id_to_idx
-        save_poses(str(basedir), poses, pts3d, perm)
+    print(result.stdout)
+    if result.stderr:
+        print("STDERR:", result.stderr)
     
-    print(f"✅ poses.npy creato in: {basedir}")
-    print(f"✅ sparse_points.ply creato in: {basedir}")
+    if result.returncode != 0:
+        raise RuntimeError(f"imgs2poses.py fallito con codice {result.returncode}")
     
-    # Stampa statistiche
+    # Verifica output
+    poses_file = Path(basedir) / "poses.npy"
+    ply_file = Path(basedir) / "sparse_points.ply"
+    
+    if not poses_file.exists():
+        raise RuntimeError(f"poses.npy non generato in: {basedir}")
+    if not ply_file.exists():
+        raise RuntimeError(f"sparse_points.ply non generato in: {basedir}")
+    
+    # Statistiche
+    poses = np.load(poses_file)
+    
+    print(f"\n✅ File generati:")
+    print(f"   - poses.npy: {poses.shape}")
+    print(f"   - sparse_points.ply")
+    
+    # Conta immagini registrate
+    num_registered = 0
+    for i in range(poses.shape[0]):
+        P = poses[i]
+        if not np.all(P == 0):
+            num_registered += 1
+    
     print(f"\n📊 Statistiche:")
-    print(f"   Immagini registrate: {len(poses)}")
-    print(f"   Punti 3D: {len(pts3d)}")
+    print(f"   Immagini totali: {poses.shape[0]}")
+    print(f"   Immagini registrate: {num_registered}")
     
-    # Warning se troppo poche immagini
-    sparse_dir = Path(basedir) / "sparse" / "0"
-    if sparse_dir.exists():
-        import struct
-        # Leggi numero totale immagini dal database
-        images_bin = sparse_dir / "images.bin"
-        if images_bin.exists():
-            with open(images_bin, 'rb') as f:
-                num_reg_images = struct.unpack('Q', f.read(8))[0]
-                print(f"   Immagini nel database: {num_reg_images}")
-    
-    if len(poses) < 10:
-        print(f"\n⚠️  ATTENZIONE: Solo {len(poses)} immagini registrate!")
-        print(f"   Possibili cause:")
+    if num_registered < 10:
+        print(f"\n⚠️  ATTENZIONE: Solo {num_registered} immagini registrate!")
+        print(f"   Questo è molto basso. Possibili cause:")
         print(f"   - Pochi match tra immagini")
-        print(f"   - Threshold troppo stringenti")
-        print(f"   - Problemi con feature detection")
-        print(f"\n💡 Soluzioni:")
-        print(f"   1. Controlla database_stats:")
-        print(f"      colmap database_stats --database_path {basedir}/database.db")
-        print(f"   2. Prova configurazione più aggressiva:")
-        print(f"      --spe3r-config aggressive")
-        print(f"   3. Aumenta numero immagini:")
-        print(f"      --num-images 100")
-    
-    print("="*70)
+        print(f"   - Dataset difficile (oggetto nero, scarsa texture)")
+        print(f"\n💡 Suggerimenti:")
+        print(f"   1. Verifica le immagini siano corrette")
+        print(f"   2. Prova con più immagini: --num-images 1000")
+        print(f"   3. Controlla il log COLMAP in: {basedir}/colmap_output.txt")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Processa SPE3R singolo satellite con COLMAP fino a sparse_points.ply"
+        description="Processa SPE3R singolo satellite con COLMAP (versione semplificata)"
     )
     
     parser.add_argument(
@@ -522,7 +259,7 @@ def main():
     parser.add_argument(
         "--satellite",
         required=True,
-        help="Nome satellite (es: hst, jwst, tango). Usato per trovare {satellite}_images/"
+        help="Nome satellite (es: hst, jwst, tango)"
     )
     
     parser.add_argument(
@@ -548,7 +285,7 @@ def main():
         "--num-images",
         type=int,
         default=500,
-        help="Numero immagini da usare (default: 500, solo sfondo nero)"
+        help="Numero immagini da usare (default: 500)"
     )
     
     parser.add_argument(
@@ -559,47 +296,16 @@ def main():
     )
     
     parser.add_argument(
-        "--use-gpu",
-        action="store_true",
-        default=True,
-        help="Usa GPU per COLMAP (default: True)"
-    )
-    
-    parser.add_argument(
-        "--no-gpu",
-        dest="use_gpu",
-        action="store_false",
-        help="Disabilita GPU, usa CPU"
-    )
-    
-    parser.add_argument(
         "--match-type",
-        default="vocab_tree_matcher",
-        choices=["exhaustive_matcher", "vocab_tree_matcher", "sequential_matcher", "spatial_matcher"],
-        help="Tipo di matcher COLMAP (default: vocab_tree_matcher)"
-    )
-    
-    parser.add_argument(
-        "--vocab-tree-path",
-        default=None,
-        help="Path al vocabulary tree .bin (RICHIESTO per vocab_tree_matcher). "
-             "Scarica con: python setup_vocab_tree.py --download --output vocab_tree.bin"
-    )
-    
-    parser.add_argument(
-        "--spe3r-config",
-        default="validated",
-        choices=["aggressive", "balanced", "conservative", "fast", "validated"],
-        help="Configurazione COLMAP ottimizzata per SPE3R (default: validated). "
-             "validated=testata con successo (230/500 img), aggressive=max quality, "
-             "balanced=veloce, conservative=max detection, fast=debug"
+        default="exhaustive_matcher",
+        choices=["exhaustive_matcher", "sequential_matcher"],
+        help="Tipo di matcher COLMAP (default: exhaustive_matcher)"
     )
     
     parser.add_argument(
         "--skip-colmap",
         action="store_true",
-        help="Salta COLMAP (Step 1-2), esegui solo generazione poses (Step 3). "
-             "Usa se COLMAP è già completato e vuoi solo generare poses.npy"
+        help="Salta COLMAP, esegui solo generazione poses (usa se COLMAP già completato)"
     )
     
     args = parser.parse_args()
@@ -608,17 +314,17 @@ def main():
     
     print("="*70)
     print("PROCESSING SPE3R SINGOLO SATELLITE → SPARSE_POINTS.PLY")
+    print("Versione SEMPLIFICATA - Parametri Validati")
     print("="*70)
     print(f"Dataset: {args.spe3r_path}")
     print(f"Satellite: {args.satellite}")
     print(f"Output: {args.output}")
     print(f"NeuS path: {args.neus_path}")
     print(f"Range immagini: {args.start_idx} → {args.start_idx + args.num_images - 1}")
-    print(f"GPU: {'ON' if args.use_gpu else 'OFF'}")
     print(f"Matcher: {args.match_type}")
     print("="*70)
     
-    # Step 0: Carica parametri camera da camera.json
+    # Step 0: Carica parametri camera
     print("\n" + "="*70)
     print("STEP 0: CARICAMENTO PARAMETRI CAMERA")
     print("="*70)
@@ -632,7 +338,7 @@ def main():
     # Step 1-2: COLMAP (se non skippato)
     if args.skip_colmap:
         print("\n" + "="*70)
-        print("⏭️  SKIP: STEPS 1-2 (COLMAP già completato)")
+        print("⏭️  SKIP: COLMAP già completato")
         print("="*70)
         print(f"✅ Usando risultati esistenti in: {output_path}")
         
@@ -668,21 +374,18 @@ def main():
             num_images=args.num_images
         )
         
-        # Step 2: COLMAP con intrinseci imposti
+        # Step 2: COLMAP
         print("\n" + "="*70)
         print("STEP 2: COLMAP (FEATURE EXTRACTION + MATCHING + SFM)")
         print("="*70)
-        run_colmap_with_intrinsics(
+        run_colmap_simple(
             basedir=output_path,
             neus_path=args.neus_path,
             camera_params=camera_params,
-            use_gpu=args.use_gpu,
-            match_type=args.match_type,
-            vocab_tree_path=args.vocab_tree_path,
-            spe3r_config=args.spe3r_config
+            match_type=args.match_type
         )
     
-    # Step 3: Genera poses.npy e sparse_points.ply
+    # Step 3: Genera poses
     print("\n" + "="*70)
     print("STEP 3: GENERAZIONE POSES E SPARSE POINTS")
     print("="*70)
@@ -693,14 +396,12 @@ def main():
     
     # Summary
     print("\n" + "="*70)
-    print("✅ PROCESSING COMPLETATO - FERMATO A SPARSE_POINTS.PLY")
+    print("✅ PROCESSING COMPLETATO")
     print("="*70)
     print(f"📁 Output: {output_path}")
     print(f"📸 Immagini processate: {num_images}")
-    print(f"   Range: img{args.start_idx:06d} → img{args.start_idx + num_images - 1:06d}")
     
     print("\n📋 File generati:")
-    
     files_to_check = [
         "database.db",
         "sparse/0/cameras.bin",
