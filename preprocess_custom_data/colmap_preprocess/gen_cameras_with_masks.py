@@ -125,14 +125,17 @@ if __name__ == '__main__':
     assert len(colmap_names) == n_images, \
         f"ERRORE: {len(colmap_names)} nomi in images.txt vs {n_images} pose in poses.npy!"
 
+    print(f'Esempio: immagine [{colmap_names[0]}] → maschera cercata [{Path(colmap_names[0]).stem + ".png"}]')
+
     missing_masks = []
     for i, fname in enumerate(colmap_names):
         # Immagine
         img = cv.imread(os.path.join(images_dir, fname))
         cv.imwrite(os.path.join(out_dir, 'image', '{:0>3d}.png'.format(i)), img)
 
-        # Maschera — stesso nome file dell'immagine (img000001.png → img000001.png)
-        src_mask = os.path.join(masks_dir, fname)
+        # Maschera — stesso stem dell'immagine, forzato a .png
+        mask_fname = Path(fname).stem + '.png'
+        src_mask = os.path.join(masks_dir, mask_fname)
         if os.path.exists(src_mask):
             mask = cv.imread(src_mask)
             cv.imwrite(os.path.join(out_dir, 'mask', '{:0>3d}.png'.format(i)), mask)
