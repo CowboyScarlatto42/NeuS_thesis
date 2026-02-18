@@ -9,18 +9,24 @@ nello stesso ordine (sorted per nome) usato da pose_utils.py per poses.npy.
 Le maschere vengono copiate con lo stesso nome dell'immagine corrispondente.
 
 USO:
-    python gen_cameras_with_masks.py <work_dir> <masks_dir> [out_dir]
+    python gen_cameras_with_masks.py <images_dir> <masks_dir> [out_dir] [colmap_dir]
 
-    work_dir  : directory con poses.npy, sparse_points_interest.ply, sparse_txt/
-    masks_dir : directory con le maschere originali (stesso nome delle immagini)
-    out_dir   : (opzionale) cartella di output. Default: <work_dir>/preprocessed
+    images_dir : directory con le immagini originali
+    masks_dir  : directory con le maschere originali (stesso nome delle immagini)
+    out_dir    : (opzionale) cartella di output. Default: <colmap_dir>/preprocessed
+    colmap_dir : (opzionale) directory con poses.npy, sparse_points_interest.ply,
+                 sparse_txt/. Default: uguale a images_dir
 
-ESEMPI:
-    # Output di default in <work_dir>/preprocessed
+ESEMPI SU COLAB:
+    # Tutto nella stessa cartella
     python gen_cameras_with_masks.py /content/my_data /content/my_data/masks
 
-    # Output personalizzato
-    python gen_cameras_with_masks.py /content/my_data /content/my_data/masks /content/NeuS_thesis/public_data/my_object
+    # Immagini, maschere e output COLMAP in cartelle separate
+    python gen_cameras_with_masks.py \
+        /content/my_data/images \
+        /content/my_data/masks \
+        /content/NeuS_thesis/public_data/my_object \
+        /content/my_data/colmap_output
 """
 
 import numpy as np
@@ -47,19 +53,25 @@ def read_images_txt_names(path):
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
-        print("USO: python gen_cameras_with_masks.py <work_dir> <masks_dir> [out_dir]")
+        print("USO: python gen_cameras_with_masks.py <images_dir> <masks_dir> [out_dir] [colmap_dir]")
         sys.exit(1)
 
-    work_dir  = sys.argv[1]
-    masks_dir = sys.argv[2]
-    out_dir   = sys.argv[3] if len(sys.argv) > 3 else os.path.join(work_dir, 'preprocessed')
+    images_dir = sys.argv[1]
+    masks_dir  = sys.argv[2]
+    out_dir    = sys.argv[3] if len(sys.argv) > 3 else None
+    colmap_dir = sys.argv[4] if len(sys.argv) > 4 else images_dir
 
-    print(f'work_dir  : {work_dir}')
-    print(f'masks_dir : {masks_dir}')
-    print(f'out_dir   : {out_dir}')
+    # out_dir default: <colmap_dir>/preprocessed
+    if out_dir is None:
+        out_dir = os.path.join(colmap_dir, 'preprocessed')
+
+    print(f'images_dir : {images_dir}')
+    print(f'masks_dir  : {masks_dir}')
+    print(f'colmap_dir : {colmap_dir}')
+    print(f'out_dir    : {out_dir}')
 
     # ── IDENTICO a gen_cameras.py originale ─────────────────────────────────
-    poses_hwf = np.load(os.path.join(work_dir, 'poses.npy'))  # (N, 3, 5)
+    poses_hwf = np.load(os.path.join(colmap_dir, 'poses.npy'))  # (N, 3, 5)
     poses_raw = poses_hwf[:, :, :4]
     hwf       = poses_hwf[:, :, 4]
 
@@ -88,7 +100,7 @@ if __name__ == '__main__':
         cam_dict['world_mat_{}'.format(i)]      = world_mat
         cam_dict['world_mat_inv_{}'.format(i)]  = np.linalg.inv(world_mat)
 
-    pcd      = trimesh.load(os.path.join(work_dir, 'sparse_points_interest.ply'))
+    pcd      = trimesh.load(os.path.join(colmap_dir, 'sparse_points_interest.ply'))
     vertices = pcd.vertices
     bbox_max = np.max(vertices, axis=0)
     bbox_min = np.min(vertices, axis=0)
@@ -107,7 +119,7 @@ if __name__ == '__main__':
     # ── fine parte identica all'originale ────────────────────────────────────
 
     # ── UNICA MODIFICA: immagini da images.txt invece di glob ────────────────
-    images_txt   = os.path.join(work_dir, 'sparse_txt', 'images.txt')
+    images_txt   = os.path.join(colmap_dir, 'sparse_txt', 'images.txt')
     colmap_names = read_images_txt_names(images_txt)
 
     assert len(colmap_names) == n_images, \
@@ -116,7 +128,7 @@ if __name__ == '__main__':
     missing_masks = []
     for i, fname in enumerate(colmap_names):
         # Immagine
-        img = cv.imread(os.path.join(work_dir, 'images', fname))
+        img = cv.imread(os.path.join(images_dir, fname))
         cv.imwrite(os.path.join(out_dir, 'image', '{:0>3d}.png'.format(i)), img)
 
         # Maschera — stesso nome file dell'immagine (img000001.png → img000001.png)
