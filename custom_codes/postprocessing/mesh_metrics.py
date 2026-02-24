@@ -54,20 +54,12 @@ _T_ROT = _T_ICP @ _T_ALIGN
 
 
 def align_mesh(pred: trimesh.Trimesh, gt: trimesh.Trimesh) -> trimesh.Trimesh:
-    """
-    Bring pred from COLMAP/NeuS frame into SPE3R frame:
-      1. Apply combined roto-translation from CloudCompare.
-      2. Estimate uniform scale from bounding-box diagonal ratio.
-      3. Apply scale centred on the (already rotated) pred centroid.
-
-    Returns a NEW mesh (original is not modified).
-    """
     m = pred.copy()
 
     # ── Step 1: roto-translation ──────────────────────────────
     m.apply_transform(_T_ROT)
 
-    # ── Step 2: estimate scale per axis, warn if inconsistent ─
+    # ── Step 2: scale per axis ────────────────────────────────
     bb_pred = m.bounds[1] - m.bounds[0]
     bb_gt   = gt.bounds[1] - gt.bounds[0]
     scales  = bb_gt / bb_pred
@@ -77,20 +69,13 @@ def align_mesh(pred: trimesh.Trimesh, gt: trimesh.Trimesh) -> trimesh.Trimesh:
     print(f"  BB gt:              {bb_gt}")
     print(f"  Scale per axis:  X={scales[0]:.4f}  Y={scales[1]:.4f}  Z={scales[2]:.4f}")
 
-    cv = np.std(scales) / np.mean(scales)
-    if cv > 0.05:
-        print(f"  ⚠  Scale CV={cv:.2%} > 5% — check rotational alignment")
-    else:
-        print(f"  ✓  Scales consistent (CV={cv:.2%})")
-
-    scale = float(np.mean(scales))
-    print(f"  Using mean scale: {scale:.6f}")
-
-    # ── Step 3: apply uniform scale centred on pred centroid ──
+    # ── Step 3: apply non-uniform scale centred on pred centroid
     c = m.centroid
     S = np.eye(4)
-    S[:3, :3] *= scale
-    S[:3, 3]   = c * (1.0 - scale)
+    S[0, 0] = scales[0]
+    S[1, 1] = scales[1]
+    S[2, 2] = scales[2]
+    S[:3, 3] = c * (1.0 - scales)  # corregge traslazione per ogni asse
     m.apply_transform(S)
     print("────────────────────────────────────────────────────\n")
 
