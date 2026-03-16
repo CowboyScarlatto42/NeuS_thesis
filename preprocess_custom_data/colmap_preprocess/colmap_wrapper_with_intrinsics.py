@@ -11,7 +11,7 @@ import os
 import subprocess
 
 
-def run_colmap(basedir, match_type, camera_params=None, use_gpu=False):
+def run_colmap(basedir, match_type, camera_params=None, use_gpu=False, mask_path=None):
     """
     Esegue COLMAP con parametri VALIDATI che funzionano.
     
@@ -53,6 +53,18 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=False):
         '--image_path', os.path.join(basedir, 'images'),
         '--ImageReader.single_camera', '1',
     ]
+
+    # Usa maschere se disponibili
+    if mask_path is None:
+        mask_path = os.path.join(basedir, 'masks')
+
+    if os.path.exists(mask_path):
+        feature_extractor_args.extend([
+            '--ImageReader.mask_path', mask_path
+        ])
+        print(f"🎭 Mask abilitate: {mask_path}")
+    else:
+        print("⚠️  Nessuna mask trovata")
     
     # Imponi intrinseci se forniti
     if camera_params is not None:

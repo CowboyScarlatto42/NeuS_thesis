@@ -96,157 +96,109 @@ def load_camera_params(spe3r_path):
     }
 
 
-def prepare_images(spe3r_path, satellite, output_path, 
-                   start_idx=1, num_images=500):
-    """
-    Copia immagini da {satellite}_images/.
-    
-    Args:
-        start_idx: Indice iniziale (default: 1, per img000001)
-        num_images: Numero di immagini da copiare (default: 500)
-    """
+def prepare_images(spe3r_path, satellite, output_path, start_idx=1, num_images=500):
     spe3r_path = Path(spe3r_path)
     output_path = Path(output_path)
-    
-    # Directory immagini: {satellite}_images
-    source_dir = spe3r_path / f"{satellite}_images"
-    
-    if not source_dir.exists():
-        raise FileNotFoundError(
-            f"Directory immagini non trovata: {source_dir}\n"
-            f"Assicurati che esista {satellite}_images/ nella directory SPE3R"
-        )
-    
-    # Trova tutte le immagini
+
+    source_img_dir = spe3r_path / f"{satellite}_images"
+    source_mask_dir = spe3r_path / f"{satellite}_masks"
+
+    if not source_img_dir.exists():
+        raise FileNotFoundError(f"Directory immagini non trovata: {source_img_dir}")
+    if not source_mask_dir.exists():
+        raise FileNotFoundError(f"Directory maschere non trovata: {source_mask_dir}")
+
     all_image_files = sorted(
-        list(source_dir.glob("*.png")) +
-        list(source_dir.glob("*.jpg"))
+        list(source_img_dir.glob("*.png")) + list(source_img_dir.glob("*.jpg"))
     )
-    
+
     if len(all_image_files) == 0:
-        raise FileNotFoundError(f"Nessuna immagine in: {source_dir}")
-    
-    print(f"📁 Trovate {len(all_image_files)} immagini totali in {source_dir}")
-    
-    # Seleziona range
+        raise FileNotFoundError(f"Nessuna immagine in: {source_img_dir}")
+
+    print(f"📁 Trovate {len(all_image_files)} immagini totali in {source_img_dir}")
+
     end_idx = start_idx - 1 + num_images
     selected_files = all_image_files[start_idx - 1:end_idx]
-    
+
     if len(selected_files) == 0:
         raise ValueError(
             f"Nessuna immagine nel range [{start_idx}:{end_idx}]. "
             f"Totale disponibili: {len(all_image_files)}"
         )
-    
+
     print(f"📸 Selezionate immagini da {start_idx} a {start_idx + len(selected_files) - 1}")
     print(f"   (totale: {len(selected_files)} immagini)")
-    
-    # Crea directory output
+
     images_dir = output_path / "images"
+    masks_dir = output_path / "masks"
     images_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Copia mantenendo nomi originali
-    print(f"📋 Copia in corso...")
+    masks_dir.mkdir(parents=True, exist_ok=True)
+
+    print("📋 Copia immagini e maschere in corso...")
     for img_file in selected_files:
         shutil.copy2(img_file, images_dir / img_file.name)
-    
+
+        mask_file = source_mask_dir / img_file.name
+        if not mask_file.exists():
+            raise FileNotFoundError(f"Maschera mancante per {img_file.name}: {mask_file}")
+        shutil.copy2(mask_file, masks_dir / mask_file.name)
+
     print(f"✅ Immagini copiate in: {images_dir}")
+    print(f"✅ Maschere copiate in: {masks_dir}")
     return len(selected_files)
 
-
 def run_colmap_simple(basedir, neus_path, camera_params, match_type='exhaustive_matcher', use_gpu=False):
-    """
-    Lancia COLMAP con parametri VALIDATI che funzionano.
-    
-    Args:
-        use_gpu: Se True usa GPU, altrimenti CPU (default: False)
-    """
     print("\n" + "="*70)
     print("ESECUZIONE COLMAP CON PARAMETRI VALIDATI")
     print("="*70)
-    
-    # Aggiungi NeuS al path Python
+
     neus_preprocess_path = Path(neus_path) / "preprocess_custom_data" / "colmap_preprocess"
     sys.path.insert(0, str(neus_preprocess_path))
-    
-    # Importa il wrapper semplificato
+
     from colmap_wrapper_with_intrinsics import run_colmap
-    
-    # Esegui COLMAP
+
     run_colmap(
-        basedir=basedir,
+        basedir=str(basedir),
         match_type=match_type,
         camera_params=camera_params,
-        use_gpu=use_gpu
+        use_gpu=use_gpu,
+        mask_path=str(Path(basedir) / "masks")
     )
-    
+
     print("\n✅ COLMAP completato")
 
 
-def generate_poses(basedir, neus_path):
-    """
-    Genera poses.npy e sparse_points.ply usando gli script NeuS.
-    """
+def generate_poses(basedir, neus_path, match_type):
     import subprocess
-    import numpy as np
-    
+
     neus_preprocess_path = Path(neus_path) / "preprocess_custom_data" / "colmap_preprocess"
     imgs2poses_script = neus_preprocess_path / "imgs2poses.py"
-    
+
     if not imgs2poses_script.exists():
         raise FileNotFoundError(f"Script non trovato: {imgs2poses_script}")
-    
-    print(f"📝 Eseguendo imgs2poses.py...")
+
+    print("📝 Eseguendo imgs2poses.py...")
     result = subprocess.run(
-        ['python', str(imgs2poses_script), str(basedir), '--match_type', 'exhaustive_matcher'],
+        ['python', str(imgs2poses_script), str(basedir), '--match_type', match_type],
         cwd=str(neus_preprocess_path),
         capture_output=True,
         text=True
     )
-    
+
     print(result.stdout)
     if result.stderr:
         print("STDERR:", result.stderr)
-    
+
     if result.returncode != 0:
         raise RuntimeError(f"imgs2poses.py fallito con codice {result.returncode}")
-    
-    # Verifica output
+
     poses_file = Path(basedir) / "poses.npy"
     ply_file = Path(basedir) / "sparse_points.ply"
-    
+
     if not poses_file.exists():
         raise RuntimeError(f"poses.npy non generato in: {basedir}")
     if not ply_file.exists():
         raise RuntimeError(f"sparse_points.ply non generato in: {basedir}")
-    
-    # Statistiche
-    poses = np.load(poses_file)
-    
-    print(f"\n✅ File generati:")
-    print(f"   - poses.npy: {poses.shape}")
-    print(f"   - sparse_points.ply")
-    
-    # Conta immagini registrate
-    num_registered = 0
-    for i in range(poses.shape[0]):
-        P = poses[i]
-        if not np.all(P == 0):
-            num_registered += 1
-    
-    print(f"\n📊 Statistiche:")
-    print(f"   Immagini totali: {poses.shape[0]}")
-    print(f"   Immagini registrate: {num_registered}")
-    
-    if num_registered < 10:
-        print(f"\n⚠️  ATTENZIONE: Solo {num_registered} immagini registrate!")
-        print(f"   Questo è molto basso. Possibili cause:")
-        print(f"   - Pochi match tra immagini")
-        print(f"   - Dataset difficile (oggetto nero, scarsa texture)")
-        print(f"\n💡 Suggerimenti:")
-        print(f"   1. Verifica le immagini siano corrette")
-        print(f"   2. Prova con più immagini: --num-images 1000")
-        print(f"   3. Controlla il log COLMAP in: {basedir}/colmap_output.txt")
 
 
 def main():
@@ -300,13 +252,6 @@ def main():
     )
     
     parser.add_argument(
-        "--match-type",
-        default="exhaustive_matcher",
-        choices=["exhaustive_matcher", "sequential_matcher"],
-        help="Tipo di matcher COLMAP (default: exhaustive_matcher)"
-    )
-    
-    parser.add_argument(
         "--use-gpu",
         action="store_true",
         help="Usa GPU per COLMAP (default: CPU - più stabile)"
@@ -316,6 +261,13 @@ def main():
         "--skip-colmap",
         action="store_true",
         help="Salta COLMAP, esegui solo generazione poses (usa se COLMAP già completato)"
+    )
+
+    parser.add_argument(
+    "--match-type",
+    default="exhaustive_matcher",
+    choices=["exhaustive_matcher", "sequential_matcher"],
+    help="Tipo di matcher COLMAP (default: exhaustive_matcher)"
     )
     
     args = parser.parse_args()
@@ -396,14 +348,15 @@ def main():
             match_type=args.match_type,
             use_gpu=args.use_gpu
         )
-    
+            
     # Step 3: Genera poses
     print("\n" + "="*70)
     print("STEP 3: GENERAZIONE POSES E SPARSE POINTS")
     print("="*70)
     generate_poses(
         basedir=output_path,
-        neus_path=args.neus_path
+        neus_path=args.neus_path,
+        match_type=args.match_type
     )
     
     # Summary
