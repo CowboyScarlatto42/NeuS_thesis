@@ -74,11 +74,11 @@ def relative_pose(q_cam_wxyz, t_cam, q_obj_wxyz, t_obj):
 
 
 def make_camera_json():
-    fov_deg = 10
-    Nu = 2048
-    Nv = 2048
-    fx = (Nu / 2) / np.tan(np.deg2rad(fov_deg / 2))
-    fy = (Nv / 2) / np.tan(np.deg2rad(fov_deg / 2))
+    #fov_deg = 10
+    Nu = 256
+    Nv = 256
+    fx = 0.0035 #(Nu / 2) / np.tan(np.deg2rad(fov_deg / 2))
+    fy = 0.0035 #(Nv / 2) / np.tan(np.deg2rad(fov_deg / 2))
     ccx = Nu / 2
     ccy = Nv / 2
 
@@ -90,8 +90,8 @@ def make_camera_json():
         "ccx": ccx,
         "ccy": ccy,
         "cameraMatrix": [
-            [float(fx), 0, float(ccx)],
-            [0, float(fy), float(ccy)],
+            [1277.37226, 0, float(ccx)],
+            [0, 1277.37226, float(ccy)],
             [0, 0, 1]
         ],
         "distCoeffs": [0, 0, 0, 0, 0]
