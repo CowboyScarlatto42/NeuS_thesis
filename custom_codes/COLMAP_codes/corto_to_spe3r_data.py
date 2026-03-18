@@ -74,8 +74,8 @@ def relative_pose(q_cam_wxyz, t_cam, q_obj_wxyz, t_obj):
 
 
 def make_camera_json():
-    Nu = 512
-    Nv = 512
+    Nu = 1024
+    Nv = 1024
     ppx = 2.74e-6,
     ppy = 2.74e-6,
     fx = 0.0035 #(Nu / 2) / np.tan(np.deg2rad(fov_deg / 2))
