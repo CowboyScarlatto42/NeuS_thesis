@@ -74,9 +74,10 @@ def relative_pose(q_cam_wxyz, t_cam, q_obj_wxyz, t_obj):
 
 
 def make_camera_json():
-    #fov_deg = 10
-    Nu = 256
-    Nv = 256
+    Nu = 512
+    Nv = 512
+    ppx = 2.74e-6,
+    ppy = 2.74e-6,
     fx = 0.0035 #(Nu / 2) / np.tan(np.deg2rad(fov_deg / 2))
     fy = 0.0035 #(Nv / 2) / np.tan(np.deg2rad(fov_deg / 2))
     ccx = Nu / 2
@@ -85,6 +86,8 @@ def make_camera_json():
     camera_dict = {
         "Nu": Nu,
         "Nv": Nv,
+        "ppx": ppx,
+        "ppy": ppy,
         "fx": fx,
         "fy": fy,
         "ccx": ccx,
