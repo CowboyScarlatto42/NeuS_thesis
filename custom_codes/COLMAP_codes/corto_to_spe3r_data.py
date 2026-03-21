@@ -132,6 +132,39 @@ def reorder_quaternion(q_wxyz, output_order="xyzw"):
     else:
         raise ValueError("output_order deve essere 'wxyz' o 'xyzw'")
 
+def rotmat_to_quat_wxyz(R):
+    """
+    Conversione matrice rotazione 3x3 -> quaternione [w, x, y, z]
+    """
+    R = np.asarray(R, dtype=float)
+    tr = np.trace(R)
+
+    if tr > 0:
+        S = np.sqrt(tr + 1.0) * 2
+        w = 0.25 * S
+        x = (R[2, 1] - R[1, 2]) / S
+        y = (R[0, 2] - R[2, 0]) / S
+        z = (R[1, 0] - R[0, 1]) / S
+    elif (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
+        S = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
+        w = (R[2, 1] - R[1, 2]) / S
+        x = 0.25 * S
+        y = (R[0, 1] + R[1, 0]) / S
+        z = (R[0, 2] + R[2, 0]) / S
+    elif R[1, 1] > R[2, 2]:
+        S = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
+        w = (R[0, 2] - R[2, 0]) / S
+        x = (R[0, 1] + R[1, 0]) / S
+        y = 0.25 * S
+        z = (R[1, 2] + R[2, 1]) / S
+    else:
+        S = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
+        w = (R[1, 0] - R[0, 1]) / S
+        x = (R[0, 2] + R[2, 0]) / S
+        y = (R[1, 2] + R[2, 1]) / S
+        z = 0.25 * S
+
+    return quat_normalize([w, x, y, z])
 
 def generate_labels_from_geometry(
     geometry_json_path,
@@ -150,6 +183,9 @@ def generate_labels_from_geometry(
                        = q_camera_to_target
     - r_Vo2To_vbs_true = posizione del target nel frame camera
     """
+
+    CAM_FRAME_FIX = np.diag([1.0, -1.0, -1.0])  # Blender/OpenGL -> CV/NeuS
+    Q_FIX_WXYZ = rotmat_to_quat_wxyz(CAM_FRAME_FIX)
 
     with open(geometry_json_path, "r") as f:
         geometry = json.load(f)
@@ -183,15 +219,27 @@ def generate_labels_from_geometry(
         # world -> camera
         q_wc = quat_conjugate(q_cw)
 
-        # world -> target
-        q_wt = quat_conjugate(q_tw)
-
-        # camera -> target = (world -> target) ⊗ (camera -> world)
+        # camera -> target nel frame camera ORIGINALE (Blender-style)
         q_ct_wxyz = quat_multiply(q_wt, q_cw)
         q_ct_wxyz = quat_normalize(q_ct_wxyz)
 
-        # posizione target nel frame camera
+        # posizione target nel frame camera ORIGINALE
         r_rel = quat_rotate_vector(q_wc, dt_w)
+
+        # =========================
+        # FIX FRAME CAMERA:
+        # da Blender/OpenGL (-Z forward)
+        # a CV/NeuS (+Z forward)
+        # =========================
+
+        # traslazione: r_new = F * r_old
+        r_rel = (CAM_FRAME_FIX @ np.asarray(r_rel, dtype=float)).tolist()
+
+        # rotazione:
+        # R_new = R_old * F
+        # in quaternioni => q_new = q_old ⊗ q_fix
+        q_ct_wxyz = quat_multiply(q_ct_wxyz, Q_FIX_WXYZ)
+        q_ct_wxyz = quat_normalize(q_ct_wxyz)
 
         labels.append({
             "filename": f"img{i+1:06d}",
