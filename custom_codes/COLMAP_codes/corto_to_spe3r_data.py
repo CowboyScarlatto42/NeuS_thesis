@@ -1,73 +1,73 @@
-import argparse
-import json
+import os
 import shutil
-from pathlib import Path
-
+import re
+import json
+import math
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+import trimesh
+import argparse
 
 
-# Blender/OpenGL camera frame -> CV/NeuS camera frame
-# x stays the same, y and z are flipped.
-CV_FROM_BLENDER = np.diag([1.0, -1.0, -1.0]).astype(np.float32)
+def copy_and_rename_images(input_folder, output_folder):
+    os.makedirs(output_folder, exist_ok=True)
 
+    files = [f for f in os.listdir(input_folder) if f.endswith('.png')]
+    
+    # ordina numericamente
+    files.sort(key=lambda x: int(os.path.splitext(x)[0]))
 
-def quat_xyzw_to_rot(q_xyzw):
-    q_xyzw = np.asarray(q_xyzw, dtype=np.float64)
-    q_xyzw = q_xyzw / np.linalg.norm(q_xyzw)
-    return R.from_quat(q_xyzw).as_matrix().astype(np.float32)
+    for i, filename in enumerate(files, start=1):
+        new_name = f"img{i:06d}.png"
+        
+        src = os.path.join(input_folder, filename)
+        dst = os.path.join(output_folder, new_name)
+        
+        shutil.copy2(src, dst)
 
+    print(f"Fatto: copiate {len(files)} immagini in {output_folder}")
 
-def rot_to_quat_wxyz(R_mat):
-    q_xyzw = R.from_matrix(np.asarray(R_mat, dtype=np.float64)).as_quat()
-    q_xyzw = q_xyzw / np.linalg.norm(q_xyzw)
-    return np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]], dtype=np.float32)
+def copy_and_rename_masks(input_folder, output_folder):
+    os.makedirs(output_folder, exist_ok=True)
 
+    files = [f for f in os.listdir(input_folder) if f.endswith('.png')]
 
-def relative_pose_body_to_camera_cv(q_cam_xyzw, t_cam, q_obj_xyzw, t_obj):
-    """
-    Input from geometry.json:
-      - q_cam_xyzw, t_cam: camera -> world
-      - q_obj_xyzw, t_obj: object/body -> world
+    def extract_index(filename):
+        match = re.search(r"mask_(\d+)_\d+\.png", filename)
+        if match:
+            return int(match.group(1))
+        else:
+            raise ValueError(f"Nome file non valido: {filename}")
 
-    Returns:
-      - q_rel_wxyz: body -> camera quaternion in CV/NeuS convention, [w,x,y,z]
-      - t_rel_cv: object origin expressed in camera frame, CV/NeuS convention
+    # ordina usando il primo indice
+    files.sort(key=extract_index)
 
-    Convention of the returned transform:
-      X_cam = R * X_body + t
-    """
-    # world <- camera
-    R_wc = quat_xyzw_to_rot(q_cam_xyzw)
-    t_cam = np.asarray(t_cam, dtype=np.float32).reshape(3, 1)
+    for i, filename in enumerate(files, start=1):
+        new_name = f"img{i:06d}.png"
 
-    # world <- object/body
-    R_wo = quat_xyzw_to_rot(q_obj_xyzw)
-    t_obj = np.asarray(t_obj, dtype=np.float32).reshape(3, 1)
+        src = os.path.join(input_folder, filename)
+        dst = os.path.join(output_folder, new_name)
 
-    # Blender/OpenGL relative pose: camera_blender <- object
-    R_co_bl = R_wc.T @ R_wo
-    t_co_bl = R_wc.T @ (t_obj - t_cam)
+        shutil.copy2(src, dst)
 
-    # Convert camera frame Blender/OpenGL -> CV/NeuS
-    R_co_cv = CV_FROM_BLENDER @ R_co_bl
-    t_co_cv = CV_FROM_BLENDER @ t_co_bl
+    print(f"Fatto: copiate {len(files)} mask rinominate in {output_folder}")
 
-    q_rel_wxyz = rot_to_quat_wxyz(R_co_cv)
-    return q_rel_wxyz, t_co_cv.reshape(3)
+def create_camera_json(
+    output_folder,
+    Nu,
+    Nv,
+    ppx,
+    ppy,
+    fx,
+    fy,
+    ccx,
+    ccy,
+    camera_matrix,
+    dist_coeffs,
+    filename="camera.json"
+):
+    os.makedirs(output_folder, exist_ok=True)
 
-
-def make_camera_json():
-    Nu = 1024
-    Nv = 1024
-    ppx = 2.74e-6
-    ppy = 2.74e-6
-    fx = 0.0035
-    fy = 0.0035
-    ccx = Nu / 2
-    ccy = Nv / 2
-
-    camera_dict = {
+    camera_data = {
         "Nu": Nu,
         "Nv": Nv,
         "ppx": ppx,
@@ -76,98 +76,258 @@ def make_camera_json():
         "fy": fy,
         "ccx": ccx,
         "ccy": ccy,
-        "cameraMatrix": [
-            [1277.37226, 0, float(ccx)],
-            [0, 1277.37226, float(ccy)],
-            [0, 0, 1],
-        ],
-        "distCoeffs": [0, 0, 0, 0, 0],
+        "cameraMatrix": camera_matrix,
+        "distCoeffs": dist_coeffs
     }
-    return camera_dict
+
+    output_path = os.path.join(output_folder, filename)
+
+    with open(output_path, "w") as f:
+        json.dump(camera_data, f, indent=2)
+
+    print(f"Creato file: {output_path}")
+
+def quat_normalize(q):
+    n = math.sqrt(sum(v * v for v in q))
+    if n == 0:
+        raise ValueError("Quaternione nullo.")
+    return [v / n for v in q]
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--images", required=True, help="Path cartella immagini")
-    parser.add_argument("--masks", required=True, help="Path cartella maschere")
-    parser.add_argument("--geometry", required=True, help="Path geometry.json")
-    parser.add_argument("--output", required=True, help="Path cartella output")
-    args = parser.parse_args()
+def quat_conjugate(q):
+    # q = [w, x, y, z]
+    w, x, y, z = q
+    return [w, -x, -y, -z]
 
-    images_dir = Path(args.images)
-    masks_dir = Path(args.masks)
-    output_dir = Path(args.output)
 
-    img_out = output_dir / "dawn_images"
-    mask_out = output_dir / "dawn_masks"
-    img_out.mkdir(parents=True, exist_ok=True)
-    mask_out.mkdir(parents=True, exist_ok=True)
+def quat_multiply(q1, q2):
+    # Hamilton product, input/output in [w, x, y, z]
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
 
-    image_files = sorted([p for p in images_dir.iterdir() if p.is_file()])
-    mask_files = sorted([p for p in masks_dir.iterdir() if p.is_file()])
+    return [
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    ]
 
-    if len(image_files) != len(mask_files):
-        raise ValueError(
-            f"Numero immagini ({len(image_files)}) diverso da numero maschere ({len(mask_files)})"
-        )
 
-    with open(args.geometry, "r") as f:
-        geom = json.load(f)
+def quat_rotate_vector(q, v):
+    # ruota il vettore v con q, con q in [w, x, y, z]
+    q = quat_normalize(q)
+    vq = [0.0, v[0], v[1], v[2]]
+    q_conj = quat_conjugate(q)
+    out = quat_multiply(quat_multiply(q, vq), q_conj)
+    return out[1:]
 
-    cam_pos = geom["camera"]["position"]
-    cam_ori = geom["camera"]["orientation"]  # geometry.json stores quaternions as [x,y,z,w]
-    body_pos = geom["body"]["position"]
-    body_ori = geom["body"]["orientation"]   # geometry.json stores quaternions as [x,y,z,w]
+
+def reorder_quaternion(q_wxyz, output_order="xyzw"):
+    w, x, y, z = q_wxyz
+
+    if output_order == "wxyz":
+        return [w, x, y, z]
+    elif output_order == "xyzw":
+        return [x, y, z, w]
+    else:
+        raise ValueError("output_order deve essere 'wxyz' o 'xyzw'")
+
+
+def generate_labels_from_geometry(
+    geometry_json_path,
+    output_labels_path,
+    output_order="xyzw"
+):
+    """
+    Convenzioni:
+
+    - geometry["camera"]["orientation"] = q_camera_to_world
+    - geometry["body"]["orientation"]   = q_target_to_world
+    - entrambi in [w, x, y, z]
+
+    labels.json:
+    - q_vbs2tango_true = orientazione del target rispetto alla camera
+                       = q_camera_to_target
+    - r_Vo2To_vbs_true = posizione del target nel frame camera
+    """
+
+    with open(geometry_json_path, "r") as f:
+        geometry = json.load(f)
+
+    cam_pos = geometry["camera"]["position"]
+    cam_quat = geometry["camera"]["orientation"]
+    body_pos = geometry["body"]["position"]
+    body_quat = geometry["body"]["orientation"]
 
     n = len(cam_pos)
 
-    if not (
-        len(cam_ori) == len(body_pos) == len(body_ori) == len(image_files) == len(mask_files) == n
-    ):
-        raise ValueError(
-            "Mismatch tra numero di immagini, maschere e pose in geometry.json: "
-            f"images={len(image_files)}, masks={len(mask_files)}, "
-            f"cam_pos={len(cam_pos)}, cam_ori={len(cam_ori)}, "
-            f"body_pos={len(body_pos)}, body_ori={len(body_ori)}"
-        )
+    if not (len(cam_quat) == len(body_pos) == len(body_quat) == n):
+        raise ValueError("Le liste in geometry.json non hanno la stessa lunghezza.")
 
     labels = []
 
-    for i, (img_path, mask_path) in enumerate(zip(image_files, mask_files), start=1):
-        out_name = f"img{i:06d}.png"
-        out_stem = f"img{i:06d}"
+    for i in range(n):
+        p_c = cam_pos[i]
+        q_cw = quat_normalize(cam_quat[i])   # camera -> world
 
-        shutil.copy2(img_path, img_out / out_name)
-        shutil.copy2(mask_path, mask_out / out_name)
+        p_t = body_pos[i]
+        q_tw = quat_normalize(body_quat[i])  # target -> world
 
-        q_rel_wxyz, t_rel_cv = relative_pose_body_to_camera_cv(
-            q_cam_xyzw=cam_ori[i - 1],
-            t_cam=cam_pos[i - 1],
-            q_obj_xyzw=body_ori[i - 1],
-            t_obj=body_pos[i - 1],
-        )
+        # target - camera nel frame world
+        dt_w = [
+            p_t[0] - p_c[0],
+            p_t[1] - p_c[1],
+            p_t[2] - p_c[2],
+        ]
 
-        labels.append(
-            {
-                "filename": out_stem,
-                # saved as [w,x,y,z]
-                "q_vbs2tango_true": q_rel_wxyz.tolist(),
-                # body/object origin expressed in camera frame (CV convention)
-                "r_Vo2To_vbs_true": t_rel_cv.tolist(),
-            }
-        )
+        # world -> camera
+        q_wc = quat_conjugate(q_cw)
 
-    with open(output_dir / "labels.json", "w") as f:
+        # world -> target
+        q_wt = quat_conjugate(q_tw)
+
+        # camera -> target = (world -> target) ⊗ (camera -> world)
+        q_ct_wxyz = quat_multiply(q_wt, q_cw)
+        q_ct_wxyz = quat_normalize(q_ct_wxyz)
+
+        # posizione target nel frame camera
+        r_rel = quat_rotate_vector(q_wc, dt_w)
+
+        labels.append({
+            "filename": f"img{i+1:06d}",
+            "q_vbs2tango_true": reorder_quaternion(q_ct_wxyz, output_order),
+            "r_Vo2To_vbs_true": r_rel
+        })
+
+    os.makedirs(os.path.dirname(output_labels_path) or ".", exist_ok=True)
+
+    with open(output_labels_path, "w") as f:
         json.dump(labels, f, indent=2)
 
-    camera_dict = make_camera_json()
-    with open(output_dir / "camera.json", "w") as f:
-        json.dump(camera_dict, f, indent=2)
+    print(f"Creato: {output_labels_path}")
+    print(f"Numero frame: {n}")
+    print(f"Quaternion output order: {output_order}")
 
-    print(f"Dataset creato in: {output_dir}")
-    print("q_vbs2tango_true salvato come [w,x,y,z]")
-    print("r_Vo2To_vbs_true salvato in convenzione CV/NeuS")
+def compute_and_save_scale_mat(glb_path, output_json_path):
+    """
+    Calcola scale_mat da un GLB e salva un JSON con:
+    {
+        "scale_mat": [[...], [...], [...], [...]]
+    }
+    """
 
+    asset = trimesh.load(glb_path, force='scene')
+    vertices_all = []
+
+    if isinstance(asset, trimesh.Scene):
+        for node_name in asset.graph.nodes_geometry:
+            transform, geom_name = asset.graph[node_name]
+            geom = asset.geometry[geom_name]
+
+            verts = np.asarray(geom.vertices)
+
+            verts_h = np.concatenate(
+                [verts, np.ones((verts.shape[0], 1), dtype=verts.dtype)],
+                axis=1
+            )
+
+            verts_world = (transform @ verts_h.T).T[:, :3]
+            vertices_all.append(verts_world)
+
+    elif isinstance(asset, trimesh.Trimesh):
+        vertices_all.append(np.asarray(asset.vertices))
+
+    else:
+        raise ValueError(f"Tipo asset non supportato: {type(asset)}")
+
+    if len(vertices_all) == 0:
+        raise ValueError("Nessun vertice trovato nel GLB.")
+
+    vertices = np.concatenate(vertices_all, axis=0)
+
+    # === stesso calcolo di NeuS ===
+    bbox_max = np.max(vertices, axis=0)
+    bbox_min = np.min(vertices, axis=0)
+    center   = (bbox_max + bbox_min) * 0.5
+    radius   = np.linalg.norm(vertices - center, ord=2, axis=-1).max()
+
+    scale_mat = np.diag([radius, radius, radius, 1.0]).astype(float)
+    scale_mat[:3, 3] = center
+
+    print("center:", center)
+    print("radius:", radius)
+
+    # converti in lista per JSON
+    scale_mat_list = scale_mat.tolist()
+
+    # salva JSON
+    os.makedirs(os.path.dirname(output_json_path) or ".", exist_ok=True)
+
+    with open(output_json_path, "w") as f:
+        json.dump({"scale_mat": scale_mat_list}, f, indent=2)
+
+    print(f"Salvato: {output_json_path}")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="CORTO → SPE3R dataset pipeline")
+
+    # Path principali
+    parser.add_argument("--images_in", type=str, required=True)
+    parser.add_argument("--masks_in", type=str, required=True)
+    parser.add_argument("--geometry", type=str, required=True)
+    parser.add_argument("--glb", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, required=True)
+
+    # Camera params (puoi modificarli da Colab)
+    parser.add_argument("--Nu", type=int, default=1024)
+    parser.add_argument("--Nv", type=int, default=1024)
+    parser.add_argument("--fx", type=float, default=1277.372265)
+    parser.add_argument("--fy", type=float, default=1277.372265)
+    parser.add_argument("--ccx", type=float, default=512)
+    parser.add_argument("--ccy", type=float, default=512)
+
+    args = parser.parse_args()
+
+    # === Output structure ===
+    images_out = os.path.join(args.output_dir, "images")
+    masks_out  = os.path.join(args.output_dir, "masks")
+
+    # 1. immagini
+    copy_and_rename_images(args.images_in, images_out)
+
+    # 2. masks
+    copy_and_rename_masks(args.masks_in, masks_out)
+
+    # 3. camera.json
+    create_camera_json(
+        output_folder=args.output_dir,
+        Nu=args.Nu,
+        Nv=args.Nv,
+        ppx=1,
+        ppy=1,
+        fx=args.fx,
+        fy=args.fy,
+        ccx=args.ccx,
+        ccy=args.ccy,
+        camera_matrix=[
+            [args.fx, 0, args.ccx],
+            [0, args.fy, args.ccy],
+            [0, 0, 1]
+        ],
+        dist_coeffs=[0, 0, 0, 0, 0]
+    )
+
+    # 4. labels.json
+    generate_labels_from_geometry(
+        geometry_json_path=args.geometry,
+        output_labels_path=os.path.join(args.output_dir, "labels.json"),
+        output_order="xyzw"
+    )
+
+    # 5. scale_mat.json
+    compute_and_save_scale_mat(
+        glb_path=args.glb,
+        output_json_path=os.path.join(args.output_dir, "scale_mat.json")
+    )
+
+    print("\n✔ Pipeline completata.")
