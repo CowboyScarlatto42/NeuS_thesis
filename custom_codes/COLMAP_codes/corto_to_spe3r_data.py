@@ -169,7 +169,6 @@ def rotmat_to_quat_wxyz(R):
 
     return quat_normalize([w, x, y, z])
 
-
 def generate_labels_from_geometry(
     geometry_json_path,
     output_labels_path,
@@ -179,17 +178,17 @@ def generate_labels_from_geometry(
     Genera labels.json a partire da geometry.json.
 
     Assunzioni:
-    - camera.orientation = q_camera_to_world
-    - body.orientation   = q_target_to_world
-    - quaternioni input in [w, x, y, z]
+    - camera.orientation = q_camera_to_world  [w, x, y, z]
+    - body.orientation   = q_target_to_world  [w, x, y, z]
 
-    Output:
-    - q_vbs2tango_true = orientazione target rispetto alla camera
-    - r_Vo2To_vbs_true = posizione target nel frame camera
+    Output (convenzione SPE3R / SPEED):
+    - q_vbs2tango_true = orientazione target rispetto alla camera (target -> camera)
+      tale che X_cam = R(q) * X_body + t
+    - r_Vo2To_vbs_true = posizione target nel frame camera (CV)
 
-    In più applica il fix di frame camera:
+    Fix di frame camera:
     Blender/OpenGL (-Z forward, +Y up)
-    --> CV/NeuS (+Z forward, +Y down)
+    --> CV/NeuS (+Z forward, -Y down)
     """
 
     # Fix di frame camera: Blender/OpenGL -> CV/NeuS
@@ -214,43 +213,41 @@ def generate_labels_from_geometry(
     for i in range(n):
         p_c = np.asarray(cam_pos[i], dtype=float)
         q_cw = quat_normalize(cam_quat[i])   # camera -> world
-
         p_t = np.asarray(body_pos[i], dtype=float)
         q_tw = quat_normalize(body_quat[i])  # target -> world
 
-        # target - camera nel frame world
-        dt_w = (p_t - p_c).tolist()
-
-        # world -> camera
+        # =============================================
+        # ROTAZIONE: target -> camera (frame CV)
+        # =============================================
+        # 1. world -> camera (in frame OpenGL)
         q_wc = quat_conjugate(q_cw)
 
-        # world -> target
-        q_wt = quat_conjugate(q_tw)
+        # 2. target -> world -> camera = target -> camera (OpenGL)
+        q_tc_wxyz = quat_multiply(q_wc, q_tw)
+        q_tc_wxyz = quat_normalize(q_tc_wxyz)
 
-        # camera -> target nel frame camera originale Blender/OpenGL
-        q_ct_wxyz = quat_multiply(q_wt, q_cw)
-        q_ct_wxyz = quat_normalize(q_ct_wxyz)
+        # 3. Fix frame camera: OpenGL -> CV
+        #    R_tc_cv = CAM_FIX @ R_tc_opengl
+        #    Moltiplicazione a SINISTRA perché il fix agisce sul
+        #    frame di destinazione (camera), non sul frame sorgente (target)
+        q_tc_wxyz = quat_multiply(Q_FIX_WXYZ, q_tc_wxyz)
+        q_tc_wxyz = quat_normalize(q_tc_wxyz)
 
-        # posizione target nel frame camera originale Blender/OpenGL
+        # =============================================
+        # TRASLAZIONE: posizione target in frame camera (CV)
+        # =============================================
+        # 1. Vettore target - camera in frame world
+        dt_w = (p_t - p_c).tolist()
+
+        # 2. Ruota nel frame camera OpenGL
         r_rel = quat_rotate_vector(q_wc, dt_w)
 
-        # ==================================================
-        # FIX FRAME CAMERA:
-        # Blender/OpenGL (-Z forward) -> CV/NeuS (+Z forward)
-        # ==================================================
-
-        # Traslazione
+        # 3. Fix frame camera: OpenGL -> CV
         r_rel = (CAM_FRAME_FIX @ np.asarray(r_rel, dtype=float)).tolist()
-
-        # Rotazione
-        # R_new = F * R_old
-        # In quaternioni: q_new = q_fix ⊗ q_old
-        q_ct_wxyz = quat_multiply(Q_FIX_WXYZ, q_ct_wxyz)
-        q_ct_wxyz = quat_normalize(q_ct_wxyz)
 
         labels.append({
             "filename": f"img{i+1:06d}",
-            "q_vbs2tango_true": reorder_quaternion(q_ct_wxyz, output_order),
+            "q_vbs2tango_true": reorder_quaternion(q_tc_wxyz, output_order),
             "r_Vo2To_vbs_true": r_rel
         })
 
