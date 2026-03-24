@@ -169,13 +169,13 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=False, mask_path
         '--Mapper.num_threads', '16',
         '--Mapper.multiple_models', '0',
         '--Mapper.extract_colors', '0',
-        
-        '--Mapper.init_min_num_inliers', '50',
-        '--Mapper.abs_pose_min_num_inliers', '30',
-        '--Mapper.abs_pose_min_inlier_ratio', '0.10',
-        '--Mapper.min_num_matches', '30',
-        '--Mapper.abs_pose_max_error', '8',
-        '--Mapper.filter_max_reproj_error', '2',
+
+        '--Mapper.init_min_num_inliers', '60',
+        '--Mapper.abs_pose_min_num_inliers', '40',
+        '--Mapper.abs_pose_min_inlier_ratio', '0.12',
+        '--Mapper.min_num_matches', '40',
+        '--Mapper.abs_pose_max_error', '6',
+        '--Mapper.filter_max_reproj_error', '1.5',
         # Parametri più permissivi che funzionano ma producono più outliers (230 immagini registrate)
         #'--Mapper.init_min_num_inliers', '30',
         #'--Mapper.abs_pose_min_num_inliers', '15',
