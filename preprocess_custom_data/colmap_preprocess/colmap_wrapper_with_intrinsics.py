@@ -102,22 +102,25 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=False, mask_path
         ])
         print("⚠️  Intrinseci NON imposti - COLMAP li stimerà")
     
-    # PARAMETRI VALIDATI CHE FUNZIONANO
     gpu_flag = '1' if use_gpu else '0'
     feature_extractor_args.extend([
         '--SiftExtraction.use_gpu', gpu_flag,
         '--SiftExtraction.num_threads', '2',
-        '--SiftExtraction.max_num_features', '20000',
-        '--SiftExtraction.peak_threshold', '0.004',  # ← CRITICO: permissivo
-        '--SiftExtraction.edge_threshold', '20',      # ← CRITICO: permissivo
+        '--SiftExtraction.max_num_features', '8192',
+        '--SiftExtraction.peak_threshold', '0.01',  
+        '--SiftExtraction.edge_threshold', '10',      
         '--SiftExtraction.max_image_size', '1024',
     ])
+
+    #'--SiftExtraction.max_num_features', '20000',
+    #'--SiftExtraction.peak_threshold', '0.004',
+    #'--SiftExtraction.edge_threshold', '20',
     
     print("\n[1/3] Feature Extraction...")
     print(f"   - GPU: {'ON' if use_gpu else 'OFF (CPU)'}")
-    print("   - peak_threshold: 0.004 (permissivo)")
-    print("   - edge_threshold: 20 (permissivo)")
-    print("   - max_features: 20000")
+    print("   - peak_threshold: 0.01 (permissivo)")
+    print("   - edge_threshold: 10 (permissivo)")
+    print("   - max_features: 8192")
     
     feat_output = subprocess.check_output(
         feature_extractor_args, 
@@ -135,6 +138,8 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=False, mask_path
         '--SiftMatching.use_gpu', gpu_flag,
         '--SiftMatching.guided_matching', '1',
         '--SiftMatching.max_num_matches', '50000',
+        '--SiftMatching.max_ratio', '0.75', # default 0.8, più restrittivo per evitare outliers
+        '--SiftMatching.max_error', '3', # default 4, più restrittivo per evitare outliers
     ]
     
     print("\n[2/3] Feature Matching...")
@@ -164,11 +169,18 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=False, mask_path
         '--Mapper.num_threads', '16',
         '--Mapper.multiple_models', '0',
         '--Mapper.extract_colors', '0',
-        # PARAMETRI VALIDATI CHE FUNZIONANO
-        '--Mapper.init_min_num_inliers', '30',
-        '--Mapper.abs_pose_min_num_inliers', '15',
-        '--Mapper.abs_pose_min_inlier_ratio', '0.05',
-        '--Mapper.min_num_matches', '15',
+        
+        '--Mapper.init_min_num_inliers', '50',
+        '--Mapper.abs_pose_min_num_inliers', '30',
+        '--Mapper.abs_pose_min_inlier_ratio', '0.10',
+        '--Mapper.min_num_matches', '30',
+        '--Mapper.abs_pose_max_error', '8',
+        '--Mapper.filter_max_reproj_error', '2',
+        # Parametri più permissivi che funzionano ma producono più outliers (230 immagini registrate)
+        #'--Mapper.init_min_num_inliers', '30',
+        #'--Mapper.abs_pose_min_num_inliers', '15',
+        #'--Mapper.abs_pose_min_inlier_ratio', '0.05',
+        #'--Mapper.min_num_matches', '15',
     ]
     
     # Se abbiamo imposto intrinseci, blocca il refinement
