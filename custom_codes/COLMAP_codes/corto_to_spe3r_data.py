@@ -2,9 +2,7 @@ import os
 import shutil
 import re
 import json
-import math
 import numpy as np
-import trimesh
 import argparse
 
 
@@ -260,66 +258,6 @@ def generate_labels_from_geometry(
     print(f"Numero frame: {n}")
     print(f"Quaternion output order: {output_order}")
 
-def compute_and_save_scale_mat(glb_path, output_json_path):
-    """
-    Calcola scale_mat da un GLB e salva un JSON con:
-    {
-        "scale_mat": [[...], [...], [...], [...]]
-    }
-    """
-
-    asset = trimesh.load(glb_path, force='scene')
-    vertices_all = []
-
-    if isinstance(asset, trimesh.Scene):
-        for node_name in asset.graph.nodes_geometry:
-            transform, geom_name = asset.graph[node_name]
-            geom = asset.geometry[geom_name]
-
-            verts = np.asarray(geom.vertices)
-
-            verts_h = np.concatenate(
-                [verts, np.ones((verts.shape[0], 1), dtype=verts.dtype)],
-                axis=1
-            )
-
-            verts_world = (transform @ verts_h.T).T[:, :3]
-            vertices_all.append(verts_world)
-
-    elif isinstance(asset, trimesh.Trimesh):
-        vertices_all.append(np.asarray(asset.vertices))
-
-    else:
-        raise ValueError(f"Tipo asset non supportato: {type(asset)}")
-
-    if len(vertices_all) == 0:
-        raise ValueError("Nessun vertice trovato nel GLB.")
-
-    vertices = np.concatenate(vertices_all, axis=0)
-
-    # === stesso calcolo di NeuS ===
-    bbox_max = np.max(vertices, axis=0)
-    bbox_min = np.min(vertices, axis=0)
-    center   = (bbox_max + bbox_min) * 0.5
-    radius   = np.linalg.norm(vertices - center, ord=2, axis=-1).max()
-
-    scale_mat = np.diag([radius, radius, radius, 1.0]).astype(float)
-    scale_mat[:3, 3] = center
-
-    print("center:", center)
-    print("radius:", radius)
-
-    # converti in lista per JSON
-    scale_mat_list = scale_mat.tolist()
-
-    # salva JSON
-    os.makedirs(os.path.dirname(output_json_path) or ".", exist_ok=True)
-
-    with open(output_json_path, "w") as f:
-        json.dump({"scale_mat": scale_mat_list}, f, indent=2)
-
-    print(f"Salvato: {output_json_path}")
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CORTO → SPE3R dataset pipeline")
 
@@ -327,7 +265,6 @@ if __name__ == "__main__":
     parser.add_argument("--images_in", type=str, required=True)
     parser.add_argument("--masks_in", type=str, required=True)
     parser.add_argument("--geometry", type=str, required=True)
-    parser.add_argument("--glb", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
 
     # Camera params (puoi modificarli da Colab)
@@ -374,12 +311,6 @@ if __name__ == "__main__":
         geometry_json_path=args.geometry,
         output_labels_path=os.path.join(args.output_dir, "labels.json"),
         output_order="xyzw"
-    )
-
-    # 5. scale_mat.json
-    compute_and_save_scale_mat(
-        glb_path=args.glb,
-        output_json_path=os.path.join(args.output_dir, "scale_mat.json")
     )
 
     print("\n✔ Pipeline completata.")
