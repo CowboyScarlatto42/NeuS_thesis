@@ -107,7 +107,7 @@ def run_colmap(basedir, match_type, camera_params=None, use_gpu=False, mask_path
         '--SiftExtraction.use_gpu', gpu_flag,
         '--SiftExtraction.num_threads', '2',
         '--SiftExtraction.max_num_features', '8192',
-        '--SiftExtraction.peak_threshold', '0.01',  
+        '--SiftExtraction.peak_threshold', '0.005',  
         '--SiftExtraction.edge_threshold', '10',      
         '--SiftExtraction.max_image_size', '1024',
     ])
