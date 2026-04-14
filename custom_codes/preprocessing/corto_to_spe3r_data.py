@@ -170,14 +170,14 @@ def rotmat_to_quat_wxyz(R):
 def generate_labels_from_geometry(
     geometry_json_path,
     output_labels_path,
-    output_order="xyzw"
+    output_order="wxyz"
 ):
     """
     Genera labels.json a partire da geometry.json.
 
     Assunzioni:
-    - camera.orientation = q_camera_to_world  [w, x, y, z]
-    - body.orientation   = q_target_to_world  [w, x, y, z]
+    - camera.orientation = q_camera_to_world  [w, x, y, z] (Blender: -Y forward, +Z up)
+    - body.orientation   = q_target_to_world  [w, x, y, z] (Blender: -Y forward, +Z up)
 
     Output (convenzione SPE3R / SPEED):
     - q_vbs2tango_true = orientazione target rispetto alla camera (target -> camera)
@@ -185,12 +185,16 @@ def generate_labels_from_geometry(
     - r_Vo2To_vbs_true = posizione target nel frame camera (CV)
 
     Fix di frame camera:
-    Blender/OpenGL (-Z forward, +Y up)
-    --> CV/NeuS (+Z forward, -Y down)
+    Blender (-Y forward, +Z up)
+    --> CV/NeuS (+Z forward, -Y up)
     """
 
-    # Fix di frame camera: Blender/OpenGL -> CV/NeuS
-    CAM_FRAME_FIX = np.diag([1.0, -1.0, -1.0])
+    # Fix di frame camera: Blender (-Y forward, +Z up) -> CV/NeuS (+Z forward, -Y up)
+    CAM_FRAME_FIX = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, -1.0, 0.0],
+    ])
     Q_FIX_WXYZ = rotmat_to_quat_wxyz(CAM_FRAME_FIX)
 
     with open(geometry_json_path, "r") as f:
@@ -217,15 +221,15 @@ def generate_labels_from_geometry(
         # =============================================
         # ROTAZIONE: target -> camera (frame CV)
         # =============================================
-        # 1. world -> camera (in frame OpenGL)
+        # 1. world -> camera (in frame Blender)
         q_wc = quat_conjugate(q_cw)
 
-        # 2. target -> world -> camera = target -> camera (OpenGL)
+        # 2. target -> world -> camera = target -> camera (Blender)
         q_tc_wxyz = quat_multiply(q_wc, q_tw)
         q_tc_wxyz = quat_normalize(q_tc_wxyz)
 
-        # 3. Fix frame camera: OpenGL -> CV
-        #    R_tc_cv = CAM_FIX @ R_tc_opengl
+        # 3. Fix frame camera: Blender -> CV
+        #    R_tc_cv = CAM_FIX @ R_tc_blender
         #    Moltiplicazione a SINISTRA perché il fix agisce sul
         #    frame di destinazione (camera), non sul frame sorgente (target)
         q_tc_wxyz = quat_multiply(Q_FIX_WXYZ, q_tc_wxyz)
@@ -237,10 +241,10 @@ def generate_labels_from_geometry(
         # 1. Vettore target - camera in frame world
         dt_w = (p_t - p_c).tolist()
 
-        # 2. Ruota nel frame camera OpenGL
+        # 2. Ruota nel frame camera Blender
         r_rel = quat_rotate_vector(q_wc, dt_w)
 
-        # 3. Fix frame camera: OpenGL -> CV
+        # 3. Fix frame camera: Blender -> CV
         r_rel = (CAM_FRAME_FIX @ np.asarray(r_rel, dtype=float)).tolist()
 
         labels.append({
@@ -270,8 +274,8 @@ if __name__ == "__main__":
     # Camera params (puoi modificarli da Colab)
     parser.add_argument("--Nu", type=int, default=1024)
     parser.add_argument("--Nv", type=int, default=1024)
-    parser.add_argument("--fx", type=float, default=1277.372265)
-    parser.add_argument("--fy", type=float, default=1277.372265)
+    parser.add_argument("--fx", type=float, default=2903.6963)
+    parser.add_argument("--fy", type=float, default=2903.6963)
     parser.add_argument("--ccx", type=float, default=512)
     parser.add_argument("--ccy", type=float, default=512)
 
@@ -310,7 +314,7 @@ if __name__ == "__main__":
     generate_labels_from_geometry(
         geometry_json_path=args.geometry,
         output_labels_path=os.path.join(args.output_dir, "labels.json"),
-        output_order="xyzw"
+        output_order="wxyz"
     )
 
     print("\n✔ Pipeline completata.")
