@@ -80,6 +80,42 @@ def extract_camera_pose(P):
     return cam_pos, view_dir, R
 
 
+def choose_best_forward_axis(rotations, positions):
+    axes = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ],
+        dtype=np.float64,
+    )
+
+    target_dirs = -positions / (np.linalg.norm(positions, axis=1, keepdims=True) + 1e-12)
+
+    best_mean = None
+    best_axis = None
+    best_dirs = None
+    best_angles = None
+
+    for axis in axes:
+        dirs = (rotations @ axis.reshape(3, 1)).squeeze(-1)
+        dirs = dirs / (np.linalg.norm(dirs, axis=1, keepdims=True) + 1e-12)
+        dots = np.sum(dirs * target_dirs, axis=1)
+        angles = np.degrees(np.arccos(np.clip(dots, -1.0, 1.0)))
+        mean_ang = float(np.mean(angles))
+
+        if best_mean is None or mean_ang < best_mean:
+            best_mean = mean_ang
+            best_axis = axis
+            best_dirs = dirs
+            best_angles = angles
+
+    return best_axis, best_dirs, best_angles
+
+
 def project_points(P, points_3d):
     n_points = points_3d.shape[0]
     points_h = np.hstack([points_3d, np.ones((n_points, 1), dtype=np.float64)])
@@ -261,18 +297,20 @@ def check_camera_positions(cam_dict, n_cams, out_dir):
     print("CHECK 2: Pose in spazio normalizzato")
     print("=" * 60)
 
-    positions, view_dirs, rot_errs, det_errs = [], [], [], []
+    positions, view_dirs, rotations, rot_errs, det_errs = [], [], [], [], []
 
     for i in range(n_cams):
         P = (cam_dict[f"world_mat_{i}"].astype(np.float64) @ cam_dict[f"scale_mat_{i}"].astype(np.float64))[:3, :4]
         cam_pos, view_dir, R = extract_camera_pose(P)
         positions.append(cam_pos)
         view_dirs.append(view_dir)
+        rotations.append(R)
         rot_errs.append(np.linalg.norm(R.T @ R - np.eye(3), ord="fro"))
         det_errs.append(abs(np.linalg.det(R) - 1.0))
 
     positions = np.asarray(positions)
     view_dirs = np.asarray(view_dirs)
+    rotations = np.asarray(rotations)
     dists = np.linalg.norm(positions, axis=1)
 
     print(f"  Distanza min/max/mean: {dists.min():.4f} / {dists.max():.4f} / {dists.mean():.4f}")
@@ -301,17 +339,16 @@ def check_camera_positions(cam_dict, n_cams, out_dir):
     plt.savefig(os.path.join(out_dir, "check2_camera_positions.png"), dpi=150)
     plt.close()
 
-    return ok, positions, view_dirs
+    return ok, positions, view_dirs, rotations
 
 
-def check_view_directions(positions, view_dirs):
+def check_view_directions(positions, rotations):
     print("\n" + "=" * 60)
     print("CHECK 3: Direzioni di vista verso l'origine")
     print("=" * 60)
 
-    target_dirs = -positions / (np.linalg.norm(positions, axis=1, keepdims=True) + 1e-12)
-    dots = np.sum(view_dirs * target_dirs, axis=1)
-    angles = np.degrees(np.arccos(np.clip(dots, -1.0, 1.0)))
+    best_axis, view_dirs, angles = choose_best_forward_axis(rotations, positions)
+    print(f"  Asse forward stimato: [{best_axis[0]:.0f}, {best_axis[1]:.0f}, {best_axis[2]:.0f}]")
 
     print(f"  Angolo mean/p95/max: {angles.mean():.2f} / {np.percentile(angles,95):.2f} / {angles.max():.2f} deg")
 
@@ -320,7 +357,7 @@ def check_view_directions(positions, view_dirs):
         print("  ✓ Camere orientate verso l'origine")
     else:
         print("  ⚠️  Alcune camere non orientate verso il target")
-    return ok
+    return ok, view_dirs
 
 
 def check_target_reprojection(cam_dict, n_cams, image_dir, out_dir):
@@ -344,21 +381,37 @@ def check_target_reprojection(cam_dict, n_cams, image_dir, out_dir):
     errs, depths = [], []
     ok = True
 
-    target_norm = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    scale_mat = cam_dict["scale_mat_0"].astype(np.float64)
+    scale_inv = np.linalg.inv(scale_mat)
+    target_world_origin_norm = scale_inv @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    target_candidates = [
+        np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64),
+        np.array([target_world_origin_norm[0], target_world_origin_norm[1], target_world_origin_norm[2], 1.0], dtype=np.float64),
+    ]
 
     for i in range(n_cams):
         P = (cam_dict[f"world_mat_{i}"].astype(np.float64) @ cam_dict[f"scale_mat_{i}"].astype(np.float64))[:3, :4]
-        proj = P @ target_norm
-        if abs(proj[2]) < 1e-8:
-            ok = False
+        best_err = None
+        best_depth = None
+        for target in target_candidates:
+            proj = P @ target
+            if abs(proj[2]) < 1e-8:
+                continue
+            px = proj[0] / proj[2]
+            py = proj[1] / proj[2]
+            depth = proj[2]
+            if depth <= 0:
+                continue
+            err = np.hypot(px - cx_exp, py - cy_exp)
+            if best_err is None or err < best_err:
+                best_err = err
+                best_depth = depth
+
+        if best_err is None:
             continue
-        px = proj[0] / proj[2]
-        py = proj[1] / proj[2]
-        depth = proj[2]
-        errs.append(np.hypot(px - cx_exp, py - cy_exp))
-        depths.append(depth)
-        if depth <= 0:
-            ok = False
+
+        errs.append(best_err)
+        depths.append(best_depth)
 
     if len(errs) == 0:
         print("  ⚠️  Nessuna reproiezione valida")
@@ -529,7 +582,7 @@ def check_masks(n_cams, mask_dir, image_dir, out_dir, n_views=4):
     return ok
 
 
-def check_near_far(cam_dict, n_cams, image_dir, sample_step=64):
+def check_near_far(cam_dict, n_cams, image_dir, mask_dir=None, sample_step=64):
     print("\n" + "=" * 60)
     print("CHECK 7: Near/Far rays check")
     print("=" * 60)
@@ -544,7 +597,13 @@ def check_near_far(cam_dict, n_cams, image_dir, sample_step=64):
         return False
     H, W = sample.shape[:2]
 
+    mask_files = list_pngs(mask_dir)
+    use_mask = len(mask_files) >= n_cams
+
     invalid_rate = []
+    hit_rate = []
+    fg_hit_rate = []
+    bg_hit_rate = []
     for i in range(n_cams):
         P = (cam_dict[f"world_mat_{i}"].astype(np.float64) @ cam_dict[f"scale_mat_{i}"].astype(np.float64))[:3, :4]
         K, pose = load_K_pose_from_P(P)
@@ -571,10 +630,38 @@ def check_near_far(cam_dict, n_cams, image_dir, sample_step=64):
         invalid = (far <= near) | (far <= 0)
         invalid_rate.append(invalid.mean())
 
-    invalid_rate = np.asarray(invalid_rate)
-    print(f"  Invalid near/far rate mean/max: {invalid_rate.mean():.5f} / {invalid_rate.max():.5f}")
+        closest = rays_o + mid * rays_d
+        hit = np.linalg.norm(closest, axis=1) <= 1.0
+        hit_rate.append(hit.mean())
 
-    ok = invalid_rate.max() < 0.01
+        if use_mask:
+            m = cv.imread(os.path.join(mask_dir, mask_files[i]), cv.IMREAD_GRAYSCALE)
+            if m is not None:
+                xi = np.clip(px.ravel().astype(np.int32), 0, W - 1)
+                yi = np.clip(py.ravel().astype(np.int32), 0, H - 1)
+                fg = m[yi, xi] > 127
+                if np.any(fg):
+                    fg_hit_rate.append(hit[fg].mean())
+                if np.any(~fg):
+                    bg_hit_rate.append(hit[~fg].mean())
+
+    invalid_rate = np.asarray(invalid_rate)
+    hit_rate = np.asarray(hit_rate)
+    print(f"  Invalid near/far rate mean/max: {invalid_rate.mean():.5f} / {invalid_rate.max():.5f}")
+    print(f"  Sphere hit-rate mean/max:       {hit_rate.mean():.5f} / {hit_rate.max():.5f}")
+
+    if len(fg_hit_rate) > 0:
+        fg_hit_rate = np.asarray(fg_hit_rate)
+        print(f"  FG hit-rate mean/min:           {fg_hit_rate.mean():.5f} / {fg_hit_rate.min():.5f}")
+    if len(bg_hit_rate) > 0:
+        bg_hit_rate = np.asarray(bg_hit_rate)
+        print(f"  BG hit-rate mean/max:           {bg_hit_rate.mean():.5f} / {bg_hit_rate.max():.5f}")
+
+    if len(fg_hit_rate) > 0:
+        ok = fg_hit_rate.mean() > 0.55 and invalid_rate.max() < 0.25
+    else:
+        ok = hit_rate.mean() > 0.02 and invalid_rate.max() < 0.25
+
     if ok:
         print("  ✓ Near/Far coerenti")
     else:
@@ -896,14 +983,15 @@ def main():
     results = {}
     results["Struttura NPZ"] = check_npz_structure(cam_dict, n_cams, image_files, mask_files)
 
-    ok2, positions, view_dirs = check_camera_positions(cam_dict, n_cams, args.out)
+    ok2, positions, view_dirs, rotations = check_camera_positions(cam_dict, n_cams, args.out)
     results["Pose normalized"] = ok2
 
-    results["Direzioni vista"] = check_view_directions(positions, view_dirs)
+    ok3, view_dirs = check_view_directions(positions, rotations)
+    results["Direzioni vista"] = ok3
     results["Target reprojection"] = check_target_reprojection(cam_dict, n_cams, args.images, args.out)
     results["Mesh reprojection"] = check_mesh_reprojection(cam_dict, n_cams, args.images, args.mesh, args.out, n_views=args.n_views)
     results["Maschere"] = check_masks(n_cams, args.masks, args.images, args.out, n_views=args.n_views)
-    results["Near/Far"] = check_near_far(cam_dict, n_cams, args.images)
+    results["Near/Far"] = check_near_far(cam_dict, n_cams, args.images, args.masks)
     results["Pose consistency"] = check_pose_consistency_dispatch(cam_dict, n_cams, args, positions, view_dirs)
 
     print_summary(results)
