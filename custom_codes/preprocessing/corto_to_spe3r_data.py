@@ -167,35 +167,110 @@ def rotmat_to_quat_wxyz(R):
 
     return quat_normalize([w, x, y, z])
 
+
+def get_camera_frame_fix(convention):
+    if convention == "blender_camera":
+        # Convenzione standard camera Blender:
+        # +X right, +Y up, -Z forward -> CV (+X right, +Y down, +Z forward)
+        return np.array([
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+        ], dtype=float)
+
+    raise ValueError(f"Convenzione camera non supportata: {convention}")
+
+
+def build_labels(cam_pos, cam_quat, body_pos, body_quat, output_order, cam_frame_fix):
+    q_fix_wxyz = rotmat_to_quat_wxyz(cam_frame_fix)
+    labels = []
+    rel_positions = []
+
+    for i in range(len(cam_pos)):
+        p_c = np.asarray(cam_pos[i], dtype=float)
+        q_cw = quat_normalize(cam_quat[i])   # camera -> world
+        p_t = np.asarray(body_pos[i], dtype=float)
+        q_tw = quat_normalize(body_quat[i])  # target -> world
+
+        q_wc = quat_conjugate(q_cw)
+
+        q_tc_wxyz = quat_multiply(q_wc, q_tw)
+        q_tc_wxyz = quat_normalize(q_tc_wxyz)
+        q_tc_wxyz = quat_multiply(q_fix_wxyz, q_tc_wxyz)
+        q_tc_wxyz = quat_normalize(q_tc_wxyz)
+
+        dt_w = (p_t - p_c).tolist()
+        r_rel = quat_rotate_vector(q_wc, dt_w)
+        r_rel = (cam_frame_fix @ np.asarray(r_rel, dtype=float)).tolist()
+        rel_positions.append(r_rel)
+
+        labels.append({
+            "filename": f"img{i+1:06d}",
+            "q_vbs2tango_true": reorder_quaternion(q_tc_wxyz, output_order),
+            "r_Vo2To_vbs_true": r_rel,
+        })
+
+    return labels, np.asarray(rel_positions, dtype=float)
+
+
+def summarize_rel_positions(rel_positions, convention_name):
+    z = rel_positions[:, 2]
+    d = np.linalg.norm(rel_positions, axis=1)
+    positive = int(np.sum(z > 0.0))
+    near_zero = int(np.sum(np.abs(z) < 1e-8))
+    summary = {
+        "convention": convention_name,
+        "positive_z": positive,
+        "near_zero_z": near_zero,
+        "total": int(len(z)),
+        "z_min": float(z.min()),
+        "z_mean": float(z.mean()),
+        "z_max": float(z.max()),
+        "dist_min": float(d.min()),
+        "dist_mean": float(d.mean()),
+        "dist_max": float(d.max()),
+    }
+    return summary
+
+
+def print_summary_block(summary):
+    print(f"[{summary['convention']}] positive_z={summary['positive_z']}/{summary['total']}, "
+          f"near_zero_z={summary['near_zero_z']}, "
+          f"z(min/mean/max)=({summary['z_min']:.6f}, {summary['z_mean']:.6f}, {summary['z_max']:.6f}), "
+          f"dist(mean)={summary['dist_mean']:.6f}")
+
+
+def choose_best_convention(candidates):
+    return max(
+        candidates,
+        key=lambda item: (
+            item["summary"]["positive_z"],
+            -item["summary"]["near_zero_z"],
+            item["summary"]["z_mean"],
+        ),
+    )
+
 def generate_labels_from_geometry(
     geometry_json_path,
     output_labels_path,
-    output_order="wxyz"
+    output_order="wxyz",
+    camera_frame="blender_camera",
 ):
     """
     Genera labels.json a partire da geometry.json.
 
     Assunzioni:
-    - camera.orientation = q_camera_to_world  [w, x, y, z] (Blender: -Y forward, +Z up)
-    - body.orientation   = q_target_to_world  [w, x, y, z] (Blender: -Y forward, +Z up)
+    - camera.orientation = q_camera_to_world  [w, x, y, z]
+    - body.orientation   = q_target_to_world  [w, x, y, z]
 
     Output (convenzione SPE3R / SPEED):
     - q_vbs2tango_true = orientazione target rispetto alla camera (target -> camera)
       tale che X_cam = R(q) * X_body + t
     - r_Vo2To_vbs_true = posizione target nel frame camera (CV)
 
-    Fix di frame camera:
-    Blender (-Y forward, +Z up)
-    --> CV/NeuS (+Z forward, -Y up)
+    `camera_frame` supporta:
+    - blender_camera
     """
-
-    # Fix di frame camera: Blender (-Y forward, +Z up) -> CV/NeuS (+Z forward, -Y up)
-    CAM_FRAME_FIX = np.array([
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0],
-        [0.0, -1.0, 0.0],
-    ])
-    Q_FIX_WXYZ = rotmat_to_quat_wxyz(CAM_FRAME_FIX)
 
     with open(geometry_json_path, "r") as f:
         geometry = json.load(f)
@@ -210,48 +285,19 @@ def generate_labels_from_geometry(
     if not (len(cam_quat) == len(body_pos) == len(body_quat) == n):
         raise ValueError("Le liste in geometry.json non hanno la stessa lunghezza.")
 
-    labels = []
+    cam_frame_fix = get_camera_frame_fix(camera_frame)
+    labels, rel_positions = build_labels(
+        cam_pos=cam_pos,
+        cam_quat=cam_quat,
+        body_pos=body_pos,
+        body_quat=body_quat,
+        output_order=output_order,
+        cam_frame_fix=cam_frame_fix,
+    )
+    summary = summarize_rel_positions(rel_positions, camera_frame)
 
-    for i in range(n):
-        p_c = np.asarray(cam_pos[i], dtype=float)
-        q_cw = quat_normalize(cam_quat[i])   # camera -> world
-        p_t = np.asarray(body_pos[i], dtype=float)
-        q_tw = quat_normalize(body_quat[i])  # target -> world
-
-        # =============================================
-        # ROTAZIONE: target -> camera (frame CV)
-        # =============================================
-        # 1. world -> camera (in frame Blender)
-        q_wc = quat_conjugate(q_cw)
-
-        # 2. target -> world -> camera = target -> camera (Blender)
-        q_tc_wxyz = quat_multiply(q_wc, q_tw)
-        q_tc_wxyz = quat_normalize(q_tc_wxyz)
-
-        # 3. Fix frame camera: Blender -> CV
-        #    R_tc_cv = CAM_FIX @ R_tc_blender
-        #    Moltiplicazione a SINISTRA perché il fix agisce sul
-        #    frame di destinazione (camera), non sul frame sorgente (target)
-        q_tc_wxyz = quat_multiply(Q_FIX_WXYZ, q_tc_wxyz)
-        q_tc_wxyz = quat_normalize(q_tc_wxyz)
-
-        # =============================================
-        # TRASLAZIONE: posizione target in frame camera (CV)
-        # =============================================
-        # 1. Vettore target - camera in frame world
-        dt_w = (p_t - p_c).tolist()
-
-        # 2. Ruota nel frame camera Blender
-        r_rel = quat_rotate_vector(q_wc, dt_w)
-
-        # 3. Fix frame camera: Blender -> CV
-        r_rel = (CAM_FRAME_FIX @ np.asarray(r_rel, dtype=float)).tolist()
-
-        labels.append({
-            "filename": f"img{i+1:06d}",
-            "q_vbs2tango_true": reorder_quaternion(q_tc_wxyz, output_order),
-            "r_Vo2To_vbs_true": r_rel
-        })
+    print("Diagnostica frame camera:")
+    print_summary_block(summary)
 
     os.makedirs(os.path.dirname(output_labels_path) or ".", exist_ok=True)
 
@@ -261,6 +307,8 @@ def generate_labels_from_geometry(
     print(f"Creato: {output_labels_path}")
     print(f"Numero frame: {n}")
     print(f"Quaternion output order: {output_order}")
+    print(f"Camera frame selected: {camera_frame}")
+    print_summary_block(summary)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CORTO → SPE3R dataset pipeline")
@@ -278,6 +326,13 @@ if __name__ == "__main__":
     parser.add_argument("--fy", type=float, default=2903.6963)
     parser.add_argument("--ccx", type=float, default=512)
     parser.add_argument("--ccy", type=float, default=512)
+    parser.add_argument(
+        "--camera_frame",
+        type=str,
+        default="blender_camera",
+        choices=["blender_camera"],
+        help="Convenzione del frame camera da usare per generare labels.json",
+    )
 
     args = parser.parse_args()
 
@@ -314,7 +369,8 @@ if __name__ == "__main__":
     generate_labels_from_geometry(
         geometry_json_path=args.geometry,
         output_labels_path=os.path.join(args.output_dir, "labels.json"),
-        output_order="wxyz"
+        output_order="wxyz",
+        camera_frame=args.camera_frame,
     )
 
     print("\n✔ Pipeline completata.")
