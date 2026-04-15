@@ -32,8 +32,8 @@ ESEMPI SU COLAB:
 import numpy as np
 import trimesh
 import cv2 as cv
-import sys
 import os
+import argparse
 from pathlib import Path
 
 
@@ -51,15 +51,43 @@ def read_images_txt_names(path):
     return sorted(names)                # equivalente a np.argsort usato in pose_utils.py
 
 
-if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        print("USO: python gen_cameras_with_masks.py <images_dir> <masks_dir> [out_dir] [colmap_dir]")
-        sys.exit(1)
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Genera camere NeuS e copia immagini/maschere usando solo le viste "
+            "registrate in COLMAP."
+        )
+    )
+    parser.add_argument(
+        "images_dir",
+        help="Directory con le immagini originali",
+    )
+    parser.add_argument(
+        "masks_dir",
+        help="Directory con le maschere originali (stesso nome delle immagini)",
+    )
+    parser.add_argument(
+        "out_dir",
+        nargs="?",
+        default=None,
+        help="Cartella di output. Default: <colmap_dir>/preprocessed",
+    )
+    parser.add_argument(
+        "colmap_dir",
+        nargs="?",
+        default=None,
+        help="Directory con poses.npy, sparse_points_interest.ply e sparse_txt/. Default: images_dir",
+    )
+    return parser.parse_args()
 
-    images_dir = sys.argv[1]
-    masks_dir  = sys.argv[2]
-    out_dir    = sys.argv[3] if len(sys.argv) > 3 else None
-    colmap_dir = sys.argv[4] if len(sys.argv) > 4 else images_dir
+
+if __name__ == '__main__':
+    args = parse_args()
+
+    images_dir = args.images_dir
+    masks_dir = args.masks_dir
+    out_dir = args.out_dir
+    colmap_dir = args.colmap_dir if args.colmap_dir is not None else images_dir
 
     # out_dir default: <colmap_dir>/preprocessed
     if out_dir is None:
