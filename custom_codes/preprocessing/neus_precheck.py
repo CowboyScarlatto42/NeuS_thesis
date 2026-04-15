@@ -115,8 +115,24 @@ def load_mesh_vertices(mesh_path, max_points=5000):
             import trimesh
         except ImportError as exc:
             raise ImportError("Per file PLY serve trimesh") from exc
-        mesh = trimesh.load(mesh_path, force="mesh")
-        vertices = np.asarray(mesh.vertices, dtype=np.float64)
+        geom = trimesh.load(mesh_path)
+
+        if isinstance(geom, trimesh.Scene):
+            collected = []
+            for item in geom.geometry.values():
+                if hasattr(item, "vertices"):
+                    verts = np.asarray(item.vertices, dtype=np.float64)
+                    if verts.size > 0:
+                        collected.append(verts)
+            if not collected:
+                raise ValueError(f"Nessun vertice trovato in {mesh_path}")
+            vertices = np.concatenate(collected, axis=0)
+        elif hasattr(geom, "vertices"):
+            vertices = np.asarray(geom.vertices, dtype=np.float64)
+        else:
+            raise ValueError(
+                f"PLY non supportato o senza vertici leggibili: {mesh_path}"
+            )
     else:
         raise ValueError(f"Formato mesh non supportato: {ext}")
 
