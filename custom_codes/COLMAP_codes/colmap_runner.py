@@ -76,8 +76,8 @@ def prepare_images(spe3r_path, satellite, output_path, start_idx=1, num_images=5
     spe3r_path = Path(spe3r_path)
     output_path = Path(output_path)
 
-    source_img_dir = spe3r_path / f"{satellite}_images"
-    source_mask_dir = spe3r_path / f"{satellite}_masks"
+    source_img_dir = spe3r_path / f"images"
+    source_mask_dir = spe3r_path / f"masks"
 
     if not source_img_dir.exists():
         raise FileNotFoundError(f"Directory immagini non trovata: {source_img_dir}")
