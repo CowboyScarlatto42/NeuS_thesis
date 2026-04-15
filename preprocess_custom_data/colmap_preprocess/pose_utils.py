@@ -5,7 +5,7 @@ import imageio
 import skimage.transform
 import trimesh
 
-from colmap_wrapper import run_colmap
+from colmap_wrapper_with_intrinsics import run_colmap
 import colmap_read_model as read_model
 
 

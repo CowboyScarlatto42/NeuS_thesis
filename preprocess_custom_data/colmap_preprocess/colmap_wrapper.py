@@ -1,1 +1,0 @@
-from colmap_wrapper_with_intrinsics import run_colmap
