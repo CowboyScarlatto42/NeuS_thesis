@@ -420,6 +420,7 @@ if __name__ == '__main__':
     parser.add_argument('--is_continue', default=False, action="store_true")
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--case', type=str, default='')
+    parser.add_argument('--img_idx', type=int, default=-1)
 
     args = parser.parse_args()
 
@@ -430,6 +431,8 @@ if __name__ == '__main__':
         runner.train()
     elif args.mode == 'validate_mesh':
         runner.validate_mesh(world_space=True, resolution=512, threshold=args.mcube_threshold)
+    elif args.mode == 'validate_image':
+        runner.validate_image(idx=args.img_idx)
     elif args.mode.startswith('interpolate'):  # Interpolate views given two image indices
         _, img_idx_0, img_idx_1 = args.mode.split('_')
         img_idx_0 = int(img_idx_0)
