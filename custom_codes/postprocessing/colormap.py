@@ -45,23 +45,32 @@ def scalar_to_rgb(s: np.ndarray) -> np.ndarray:
 # ============================================================
 # Save point cloud with scalar field 'dist_raw'
 # ============================================================
-def save_pointcloud_with_dist(out_path: Path, points: np.ndarray, dist_raw: np.ndarray) -> None:
+def save_pointcloud_with_dist(
+    out_path: Path,
+    points: np.ndarray,
+    dist_raw: np.ndarray,
+    color_hi: float = 0.10,
+) -> None:
     """
     Save PLY point cloud with:
       - xyz
-      - uchar rgb (from dist_raw clipped at p99, for visualization)
+      - uchar rgb (from dist_raw normalized by a fixed global scale, for visualization)
       - scalar field:
           * dist_raw (mesh units, RAW values)
     """
     pts = np.asarray(points, dtype=np.float32)
     d   = np.asarray(dist_raw, dtype=np.float64)
 
-    # p99 clipping ONLY for colors
-    hi = float(np.percentile(d, 99.0))
-    if not np.isfinite(hi) or hi <= 0:
-        hi = float(np.max(d)) if np.max(d) > 0 else 1.0
-
-    colors = scalar_to_rgb(d / hi)
+    # Fixed global color scale (meters):
+    # 0.00 m -> blue
+    # 0.02 m -> cyan
+    # 0.04 m -> green
+    # 0.06 m -> yellow
+    # 0.08 m -> orange
+    # 0.10 m -> red
+    hi = float(color_hi)
+    s = d / hi
+    colors = scalar_to_rgb(s)
 
     vertex = np.empty(len(pts), dtype=[
         ("x", "f4"), ("y", "f4"), ("z", "f4"),
@@ -80,6 +89,9 @@ def save_pointcloud_with_dist(out_path: Path, points: np.ndarray, dist_raw: np.n
     out_path.parent.mkdir(parents=True, exist_ok=True)
     PlyData([PlyElement.describe(vertex, "vertex")], text=False).write(str(out_path))
 
+    pct_over = 100.0 * float(np.mean(d >= hi)) if len(d) > 0 else 0.0
+    print(f"  [colormap] color_hi={hi:.6f} m, points dist_raw>=color_hi: {pct_over:.2f}%")
+
 
 # ============================================================
 # CLI
@@ -92,6 +104,7 @@ def parse_args():
     p.add_argument("--n_points",  type=int,  default=50_000)
     p.add_argument("--seed",      type=int,  default=0,
                    help="Set -1 to disable seeding.")
+    p.add_argument("--color_hi",  type=float, default=0.10)
     p.add_argument("--out_dir",   type=Path, required=True)
     return p.parse_args()
 
@@ -136,8 +149,18 @@ def main():
         d_pred_to_gt = nn_distances(pred_pts, gt_pts)
         d_gt_to_pred = nn_distances(gt_pts, pred_pts)
 
-        save_pointcloud_with_dist(out_base / "pred_to_gt.ply", pred_pts, d_pred_to_gt)
-        save_pointcloud_with_dist(out_base / "gt_to_pred.ply", gt_pts,   d_gt_to_pred)
+        save_pointcloud_with_dist(
+            out_base / "pred_to_gt.ply",
+            pred_pts,
+            d_pred_to_gt,
+            color_hi=args.color_hi,
+        )
+        save_pointcloud_with_dist(
+            out_base / "gt_to_pred.ply",
+            gt_pts,
+            d_gt_to_pred,
+            color_hi=args.color_hi,
+        )
 
         print(f"  [saved] pred_to_gt.ply, gt_to_pred.ply -> {out_base}")
 
