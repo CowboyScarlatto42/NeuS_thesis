@@ -6,12 +6,9 @@ Costruisce un dataset filtrato a partire dagli indici accettati
 prodotti da filter_by_phase_angle.py.
 
 Output:
-  <output_dir>/images/          immagini dei frame accettati
-  <output_dir>/masks/           maschere dei frame accettati
-  <output_dir>/geometry.json    geometry.json con solo i frame accettati
-
-I nomi dei file vengono preservati (non rinominati sequenzialmente),
-così restano compatibili con corto_to_spe3r_data.py e gli altri script.
+    <output_dir>/img/             immagini dei frame accettati rinominate 000000.png, ...
+    <output_dir>/masks/           maschere dei frame accettati rinominate mask_000000_0001.png, ...
+    <output_dir>/geometry.json    geometry.json con solo i frame accettati
 
 USO:
     python build_filtered_dataset.py \\
@@ -39,7 +36,7 @@ def parse_args():
     parser.add_argument("--images",    required=True, type=Path,
                         help="Directory immagini originali")
     parser.add_argument("--masks",     required=True, type=Path,
-                        help="Directory maschere originali")
+                        help="Directory maschere originali (mask_000000_0001.png, ...)")
     parser.add_argument("--geometry",  required=True, type=Path,
                         help="Path a geometry.json originale")
     parser.add_argument("--output",    required=True, type=Path,
@@ -70,7 +67,7 @@ def main():
         )
 
     # Crea cartelle output
-    out_images = args.output / "images"
+    out_images = args.output / "img"
     out_masks  = args.output / "masks"
     out_images.mkdir(parents=True, exist_ok=True)
     out_masks.mkdir(parents=True, exist_ok=True)
@@ -78,22 +75,29 @@ def main():
     # Copia immagini e maschere
     print("\nCopia immagini e maschere...")
     missing_masks = []
-    for idx in accepted:
-        src_img = all_images[idx]
+    for new_idx, src_idx in enumerate(accepted):
+        src_img = all_images[int(src_idx)]
+        dst_img_name = f"{new_idx:06d}.png"
+        shutil.copy2(src_img, out_images / dst_img_name)
 
-        shutil.copy2(src_img, out_images / src_img.name)
+        # Le maschere in input seguono il pattern mask_{frame:06d}_{seq:04d}.png.
+        # In output rinominiamo i frame filtrati usando il nuovo indice immagine.
+        mask_glob = f"mask_{int(src_idx):06d}_*.png"
+        src_masks = sorted(args.masks.glob(mask_glob))
 
-        src_mask = args.masks / src_img.name
-        if src_mask.exists():
-            shutil.copy2(src_mask, out_masks / src_img.name)
-        else:
-            missing_masks.append(src_img.name)
+        if not src_masks:
+            missing_masks.append(dst_img_name)
+            continue
+
+        for mask_seq, src_mask in enumerate(src_masks, start=1):
+            dst_mask_name = f"mask_{new_idx:06d}_{mask_seq:04d}.png"
+            shutil.copy2(src_mask, out_masks / dst_mask_name)
 
     print(f"  Immagini copiate: {len(accepted)}")
     if missing_masks:
         print(f"  [WARN] Maschere mancanti ({len(missing_masks)}): {missing_masks}")
     else:
-        print(f"  Maschere copiate: {len(accepted)}")
+        print(f"  Maschere copiate: {len(list(out_masks.glob('*.png')))}")
 
     # Costruisce geometry.json filtrato
     with open(args.geometry) as f:
