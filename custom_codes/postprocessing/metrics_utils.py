@@ -61,3 +61,36 @@ def symmetric_chamfer(d_pred_to_gt: np.ndarray, d_gt_to_pred: np.ndarray) -> flo
     d_pred_to_gt = np.asarray(d_pred_to_gt, dtype=np.float64)
     d_gt_to_pred = np.asarray(d_gt_to_pred, dtype=np.float64)
     return float(0.5 * (np.mean(d_pred_to_gt) + np.mean(d_gt_to_pred)))
+
+
+def _finite_distances(d: np.ndarray) -> np.ndarray:
+    d = np.asarray(d, dtype=np.float64)
+    return d[np.isfinite(d)]
+
+
+def directed_hausdorff(d_from_to: np.ndarray) -> float:
+    d = _finite_distances(d_from_to)
+    if d.size == 0:
+        return float("nan")
+    return float(np.max(d))
+
+
+def directed_hausdorff_p95(d_from_to: np.ndarray) -> float:
+    d = _finite_distances(d_from_to)
+    if d.size == 0:
+        return float("nan")
+    return float(np.quantile(d, 0.95))
+
+
+def symmetric_hausdorff(d_pred_to_gt: np.ndarray, d_gt_to_pred: np.ndarray) -> float:
+    return float(np.maximum(
+        directed_hausdorff(d_pred_to_gt),
+        directed_hausdorff(d_gt_to_pred),
+    ))
+
+
+def symmetric_hausdorff_p95(d_pred_to_gt: np.ndarray, d_gt_to_pred: np.ndarray) -> float:
+    return float(np.maximum(
+        directed_hausdorff_p95(d_pred_to_gt),
+        directed_hausdorff_p95(d_gt_to_pred),
+    ))

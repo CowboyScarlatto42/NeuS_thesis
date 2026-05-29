@@ -19,10 +19,16 @@ Outputs (if --out_dir is given):
 import argparse
 from pathlib import Path
 import json
+import os
+import tempfile
 import numpy as np
-import matplotlib.pyplot as plt
 
-from metrics_utils import load_mesh, nn_distances, sample_surface_points, symmetric_chamfer
+if "MPLCONFIGDIR" not in os.environ:
+    mpl_cache_dir = Path(tempfile.gettempdir()) / "matplotlib"
+    mpl_cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = str(mpl_cache_dir)
+
+import matplotlib.pyplot as plt
 
 
 # ============================================================
@@ -83,18 +89,17 @@ def plot_histogram_fraction(
     plt.close()
 
 
-# ============================================================
-# Main
-# ============================================================
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--pred_mesh",    type=Path, required=True)
-    ap.add_argument("--gt_mesh",      type=Path, required=True)
-    ap.add_argument("--n",            type=int,  default=100_000)
-    ap.add_argument("--seed",         type=int,  default=42)
-    ap.add_argument("--out_dir",      type=Path, default=None,
-                    help="If provided, save .npy arrays, stats.json and histogram PNGs")
-    args = ap.parse_args()
+def run_mesh_metrics(args) -> None:
+    from metrics_utils import (
+        directed_hausdorff,
+        directed_hausdorff_p95,
+        load_mesh,
+        nn_distances,
+        sample_surface_points,
+        symmetric_chamfer,
+        symmetric_hausdorff,
+        symmetric_hausdorff_p95,
+    )
 
     if args.out_dir is not None:
         args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -114,17 +119,27 @@ def main():
     G = sample_surface_points(gt, args.n, seed=gt_seed)
     P = sample_surface_points(pred, args.n, seed=pred_seed)
 
-    # ── 3D Chamfer ────────────────────────────────────────────
+    # ── 3D Chamfer / Hausdorff ────────────────────────────────
     dP = nn_distances(P, G)   # pred → gt
     dG = nn_distances(G, P)   # gt → pred
 
     sP = stats(dP)
     sG = stats(dG)
     chamfer_sym = symmetric_chamfer(dP, dG)
+    hausdorff_pred_to_gt = directed_hausdorff(dP)
+    hausdorff_gt_to_pred = directed_hausdorff(dG)
+    hausdorff_sym = symmetric_hausdorff(dP, dG)
+    hausdorff_p95_pred_to_gt = directed_hausdorff_p95(dP)
+    hausdorff_p95_gt_to_pred = directed_hausdorff_p95(dG)
+    hausdorff_p95_sym = symmetric_hausdorff_p95(dP, dG)
 
     print_stats("Pred → GT statistics (3D)", sP)
     print_stats("GT → Pred statistics (3D)", sG)
     print(f"\nSymmetric Chamfer (mean, 3D): {chamfer_sym:.6e}")
+    print(f"Directed Hausdorff pred → gt (3D): {hausdorff_pred_to_gt:.6e}")
+    print(f"Directed Hausdorff gt → pred (3D): {hausdorff_gt_to_pred:.6e}")
+    print(f"Symmetric Hausdorff (3D): {hausdorff_sym:.6e}")
+    print(f"Symmetric Hausdorff-p95 (3D): {hausdorff_p95_sym:.6e}")
 
     plot_histogram_fraction(
         dP, "Distance error distribution (pred → gt)",
@@ -145,12 +160,34 @@ def main():
             "pred_to_gt_3d":        sP,
             "gt_to_pred_3d":        sG,
             "symmetric_chamfer_3d": chamfer_sym,
+            "directed_hausdorff_pred_to_gt_3d": hausdorff_pred_to_gt,
+            "directed_hausdorff_gt_to_pred_3d": hausdorff_gt_to_pred,
+            "hausdorff_3d": hausdorff_sym,
+            "directed_hausdorff_p95_pred_to_gt_3d": hausdorff_p95_pred_to_gt,
+            "directed_hausdorff_p95_gt_to_pred_3d": hausdorff_p95_gt_to_pred,
+            "hausdorff_p95_3d": hausdorff_p95_sym,
             "n":    args.n,
             "seed": args.seed,
         }
         with open(args.out_dir / "stats.json", "w") as f:
             json.dump(payload, f, indent=2)
         print(f"\nResults saved to: {args.out_dir}")
+
+
+# ============================================================
+# Main
+# ============================================================
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pred_mesh",    type=Path, required=True)
+    ap.add_argument("--gt_mesh",      type=Path, required=True)
+    ap.add_argument("--n",            type=int,  default=100_000)
+    ap.add_argument("--seed",         type=int,  default=42)
+    ap.add_argument("--out_dir",      type=Path, default=None,
+                    help="If provided, save .npy arrays, stats.json and histogram PNGs")
+    args = ap.parse_args()
+
+    run_mesh_metrics(args)
 
 
 if __name__ == "__main__":
