@@ -14,10 +14,15 @@ def load_colmap_data(realdir):
     camerasfile = os.path.join(realdir, 'sparse/0/cameras.bin')
     camdata = read_model.read_cameras_binary(camerasfile)
     
-    # cam = camdata[camdata.keys()[0]]
+    if not camdata:
+        raise RuntimeError('No cameras found in sparse/0/cameras.bin')
+
+    # The dataset uses a shared camera model. Keep using the first camera,
+    # but print the actual number of COLMAP camera records rather than the
+    # length of the namedtuple returned for a single camera.
     list_of_keys = list(camdata.keys())
     cam = camdata[list_of_keys[0]]
-    print( 'Cameras', len(cam))
+    print('Cameras', len(camdata))
 
     h, w, f = cam.height, cam.width, cam.params[0]
     # w, h, f = factor * w, factor * h, factor * f
@@ -29,10 +34,23 @@ def load_colmap_data(realdir):
     w2c_mats = []
     bottom = np.array([0,0,0,1.]).reshape([1,4])
     
-    names = [imdata[k].name for k in imdata]
-    print( 'Images #', len(names))
+    if not imdata:
+        raise RuntimeError('No registered images found in sparse/0/images.bin')
+
+    # COLMAP IMAGE_ID values are database identifiers. They are not
+    # guaranteed to be contiguous when some input images are not registered.
+    # Keep an explicit mapping from IMAGE_ID to the local pose index used in
+    # w2c_mats / poses.
+    image_ids = list(imdata.keys())
+    image_id_to_pose_idx = {
+        int(image_id): pose_idx
+        for pose_idx, image_id in enumerate(image_ids)
+    }
+
+    names = [imdata[k].name for k in image_ids]
+    print('Images #', len(names))
     perm = np.argsort(names)
-    for k in imdata:
+    for k in image_ids:
         im = imdata[k]
         R = im.qvec2rotmat()
         t = im.tvec.reshape([3,1])
@@ -51,21 +69,34 @@ def load_colmap_data(realdir):
     # must switch to [-u, r, -t] from [r, -u, t], NOT [r, u, -t]
     poses = np.concatenate([poses[:, 1:2, :], poses[:, 0:1, :], -poses[:, 2:3, :], poses[:, 3:4, :], poses[:, 4:5, :]], 1)
     
-    return poses, pts3d, perm
+    return poses, pts3d, perm, image_id_to_pose_idx
 
 
-def save_poses(basedir, poses, pts3d, perm):
+def save_poses(basedir, poses, pts3d, perm, image_id_to_pose_idx):
     pts_arr = []
     vis_arr = []
+    skipped_observations = 0
+
     for k in pts3d:
         pts_arr.append(pts3d[k].xyz)
         cams = [0] * poses.shape[-1]
-        for ind in pts3d[k].image_ids:
-            if len(cams) < ind - 1:
-                print('ERROR: the correct camera poses for current points cannot be accessed')
-                return
-            cams[ind-1] = 1
+
+        for image_id in pts3d[k].image_ids:
+            # Do not use cams[image_id - 1]: IMAGE_ID values can have gaps
+            # when COLMAP registers only a subset of the input images.
+            pose_idx = image_id_to_pose_idx.get(int(image_id))
+            if pose_idx is None:
+                skipped_observations += 1
+                continue
+            cams[pose_idx] = 1
+
         vis_arr.append(cams)
+
+    if skipped_observations:
+        print(
+            'WARNING: skipped {} point observations whose IMAGE_ID is not '
+            'present in the registered-image map'.format(skipped_observations)
+        )
 
     pts = np.stack(pts_arr, axis=0)
     pcd = trimesh.PointCloud(pts)
@@ -258,10 +289,9 @@ def gen_poses(basedir, match_type, factors=None):
         
     print('Post-colmap')
     
-    poses, pts3d, perm = load_colmap_data(basedir)
+    poses, pts3d, perm, image_id_to_pose_idx = load_colmap_data(basedir)
 
-
-    save_poses(basedir, poses, pts3d, perm)
+    save_poses(basedir, poses, pts3d, perm, image_id_to_pose_idx)
     
     if factors is not None:
         print( 'Factors:', factors)
