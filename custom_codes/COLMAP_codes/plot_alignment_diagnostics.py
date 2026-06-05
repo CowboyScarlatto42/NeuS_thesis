@@ -70,21 +70,30 @@ def downsample(points: np.ndarray, max_points: int, seed: int = 0) -> np.ndarray
     return points[rng.choice(len(points), size=max_points, replace=False)]
 
 
+def trajectory_line_points(points: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """Exclude a duplicated final orbit sample from the connecting line."""
+    if len(reference) > 1 and np.allclose(reference[0], reference[-1], rtol=1e-5, atol=1e-8):
+        return points[:-1]
+    return points
+
+
 def plot_trajectories(
     results: Sequence[OrbitDiagnostics], output: Path, max_sparse_points: int
 ) -> None:
     fig = plt.figure(figsize=(9, 8))
     ax = fig.add_subplot(111, projection="3d")
     for result in results:
-        ax.plot(*result.gt_centers.T, marker="o", markersize=2, linewidth=1, label=f"{result.tag} GT")
+        gt_line = trajectory_line_points(result.gt_centers, result.gt_centers)
+        aligned_line = trajectory_line_points(result.aligned_centers, result.gt_centers)
+        ax.plot(*gt_line.T, linewidth=1, label=f"{result.tag} GT")
         ax.plot(
-            *result.aligned_centers.T,
-            marker="x",
-            markersize=3,
+            *aligned_line.T,
             linewidth=1,
             linestyle="--",
             label=f"{result.tag} COLMAP aligned",
         )
+        ax.scatter(*result.gt_centers.T, marker="o", s=8)
+        ax.scatter(*result.aligned_centers.T, marker="x", s=10)
         if result.sparse_points is not None and len(result.sparse_points):
             cloud = downsample(result.sparse_points, max_sparse_points)
             ax.scatter(*cloud.T, s=1, alpha=0.08, label=f"{result.tag} sparse")
