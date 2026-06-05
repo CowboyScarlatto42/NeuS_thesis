@@ -71,10 +71,36 @@ def downsample(points: np.ndarray, max_points: int, seed: int = 0) -> np.ndarray
 
 
 def trajectory_line_points(points: np.ndarray, reference: np.ndarray) -> np.ndarray:
-    """Exclude a duplicated final orbit sample from the connecting line."""
+    """Break the line at duplicated endpoints and anomalous trajectory jumps."""
+    points = np.asarray(points, dtype=float)
+    reference = np.asarray(reference, dtype=float)
+
     if len(reference) > 1 and np.allclose(reference[0], reference[-1], rtol=1e-5, atol=1e-8):
-        return points[:-1]
-    return points
+        points = points[:-1]
+        reference = reference[:-1]
+
+    if len(reference) < 3:
+        return points
+
+    step_lengths = np.linalg.norm(np.diff(reference, axis=0), axis=1)
+    positive_steps = step_lengths[step_lengths > 1e-12]
+    if not len(positive_steps):
+        return points
+
+    median_step = float(np.median(positive_steps))
+    mad = float(np.median(np.abs(positive_steps - median_step)))
+    jump_threshold = max(5.0 * median_step, median_step + 10.0 * 1.4826 * mad)
+    jump_indices = np.flatnonzero(step_lengths > jump_threshold) + 1
+
+    if not len(jump_indices):
+        return points
+
+    pieces = np.split(points, jump_indices)
+    separator = np.full((1, 3), np.nan)
+    line_parts = [pieces[0]]
+    for piece in pieces[1:]:
+        line_parts.extend([separator, piece])
+    return np.vstack(line_parts)
 
 
 def plot_trajectories(
