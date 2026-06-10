@@ -172,7 +172,16 @@ def plot_trajectories(
         label = labels.get(result.tag, result.tag)
         gt_line = trajectory_line_points(result.gt_centers_full, result.gt_centers_full)
         aligned_line = trajectory_line_points(result.aligned_centers, result.gt_centers)
-        ax.plot(*gt_line.T, color=color, linewidth=1.0, alpha=0.45, label=f"{label} GT")
+        ax.plot(
+            *gt_line.T,
+            color=color,
+            linewidth=1.0,
+            alpha=0.5,
+            marker="o",
+            markersize=2.5,
+            markeredgewidth=0.0,
+            label=f"{label} GT",
+        )
         ax.plot(
             *aligned_line.T,
             color=color,
