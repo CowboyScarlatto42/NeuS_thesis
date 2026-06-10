@@ -172,14 +172,14 @@ def plot_trajectories(
         label = labels.get(result.tag, result.tag)
         gt_line = trajectory_line_points(result.gt_centers_full, result.gt_centers_full)
         aligned_line = trajectory_line_points(result.aligned_centers, result.gt_centers)
-        ax.plot(*gt_line.T, color=color, linewidth=2.0, label=f"{label} GT")
+        ax.plot(*gt_line.T, color=color, linewidth=1.0, alpha=0.45, label=f"{label} GT")
         ax.plot(
             *aligned_line.T,
             color=color,
-            linewidth=1.4,
+            linewidth=2.2,
             linestyle="--",
             marker="x",
-            markersize=4,
+            markersize=5,
             label=f"{label} COLMAP aligned",
         )
     ax.scatter([0], [0], [0], color="#D62728", s=70, depthshade=False, label="target", zorder=5)
