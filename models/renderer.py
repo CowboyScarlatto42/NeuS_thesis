@@ -210,7 +210,8 @@ class NeuSRenderer:
                     background_alpha=None,
                     background_sampled_color=None,
                     background_rgb=None,
-                    cos_anneal_ratio=0.0):
+                    cos_anneal_ratio=0.0,
+                    deformation_grid=None):
         batch_size, n_samples = z_vals.shape
 
         # Section length
@@ -224,13 +225,16 @@ class NeuSRenderer:
 
         pts = pts.reshape(-1, 3)
         dirs = dirs.reshape(-1, 3)
+        pts_query = pts
+        if deformation_grid is not None:
+            pts_query = pts + deformation_grid(pts)
 
-        sdf_nn_output = sdf_network(pts)
+        sdf_nn_output = sdf_network(pts_query)
         sdf = sdf_nn_output[:, :1]
         feature_vector = sdf_nn_output[:, 1:]
 
-        gradients = sdf_network.gradient(pts).squeeze()
-        sampled_color = color_network(pts, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
+        gradients = sdf_network.gradient(pts_query).squeeze()
+        sampled_color = color_network(pts_query, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
 
         inv_s = deviation_network(torch.zeros([1, 3], device=pts.device))[:, :1].clip(1e-6, 1e6)           # Single parameter
         inv_s = inv_s.expand(batch_size * n_samples, 1)
@@ -291,7 +295,15 @@ class NeuSRenderer:
             'inside_sphere': inside_sphere
         }
 
-    def render(self, rays_o, rays_d, near, far, perturb_overwrite=-1, background_rgb=None, cos_anneal_ratio=0.0):
+    def render(self,
+               rays_o,
+               rays_d,
+               near,
+               far,
+               perturb_overwrite=-1,
+               background_rgb=None,
+               cos_anneal_ratio=0.0,
+               deformation_grid=None):
         batch_size = len(rays_o)
         device = rays_o.device
         sample_dist = 2.0 / self.n_samples   # Assuming the region of interest is a unit sphere
@@ -366,7 +378,8 @@ class NeuSRenderer:
                                     background_rgb=background_rgb,
                                     background_alpha=background_alpha,
                                     background_sampled_color=background_sampled_color,
-                                    cos_anneal_ratio=cos_anneal_ratio)
+                                    cos_anneal_ratio=cos_anneal_ratio,
+                                    deformation_grid=deformation_grid)
 
         color_fine = ret_fine['color']
         weights = ret_fine['weights']
