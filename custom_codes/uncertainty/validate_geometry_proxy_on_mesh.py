@@ -148,9 +148,9 @@ def sparsification_curve(error, hessian, seed, steps=101):
     fractions_removed = np.linspace(0.0, 0.99, steps)
     rng = np.random.default_rng(seed)
     orders = {
-        'hessian_low_to_high': np.argsort(hessian),
-        'random': rng.permutation(n),
-        'oracle_low_error_to_high_error': np.argsort(error),
+        'estimated_proxy': np.argsort(hessian),
+        'random_baseline': rng.permutation(n),
+        'oracle': np.argsort(-error),
     }
     rows = []
     for fraction in fractions_removed:
@@ -175,14 +175,43 @@ def write_csv(path, rows, fieldnames=None):
             writer.writerow(row)
 
 
+def validate_sparsification_curves(rows, tolerance=1e-12):
+    estimated = np.asarray([row['mean_error_estimated_proxy'] for row in rows], dtype=np.float64)
+    random = np.asarray([row['mean_error_random_baseline'] for row in rows], dtype=np.float64)
+    oracle = np.asarray([row['mean_error_oracle'] for row in rows], dtype=np.float64)
+
+    if estimated.shape != random.shape or estimated.shape != oracle.shape:
+        raise RuntimeError(
+            'sparsification curves have mismatched shapes: estimated={}, random={}, oracle={}'.format(
+                estimated.shape, random.shape, oracle.shape
+            )
+        )
+    if not (np.all(np.isfinite(estimated)) and np.all(np.isfinite(random)) and np.all(np.isfinite(oracle))):
+        raise RuntimeError('sparsification curves contain NaN or Inf values')
+
+    initial = np.asarray([estimated[0], random[0], oracle[0]], dtype=np.float64)
+    if np.max(np.abs(initial - initial[0])) > tolerance:
+        raise RuntimeError(
+            'sparsification curves do not share the same initial mean error: {}'.format(initial.tolist())
+        )
+    if np.any(np.diff(oracle) > tolerance):
+        raise RuntimeError('oracle sparsification curve is not non-increasing within tolerance {}'.format(tolerance))
+
+    return estimated, random, oracle
+
+
 def plot_sparsification(path, rows):
-    x = [row['fraction_removed'] for row in rows]
+    x = np.asarray([row['fraction_removed'] for row in rows], dtype=np.float64)
+    estimated, random, oracle = validate_sparsification_curves(rows)
+
     plt.figure(figsize=(7, 5))
-    plt.plot(x, [row['mean_error_hessian_low_to_high'] for row in rows], label='H low to high')
-    plt.plot(x, [row['mean_error_random'] for row in rows], label='random')
-    plt.plot(x, [row['mean_error_oracle_low_error_to_high_error'] for row in rows], label='oracle')
-    plt.xlabel('Fraction removed')
-    plt.ylabel('Mean remaining geometric error')
+    plt.plot(x, estimated, label='Estimated proxy')
+    plt.plot(x, random, label='Random baseline')
+    plt.plot(x, oracle, label='Oracle')
+    plt.xlabel('Fraction of removed points')
+    plt.ylabel('Mean geometric error of remaining points')
+    plt.title('Sparsification curve — geometry-oriented sensitivity proxy')
+    plt.xlim(0.0, 0.95)
     plt.legend()
     plt.tight_layout()
     plt.savefig(path, dpi=300)
