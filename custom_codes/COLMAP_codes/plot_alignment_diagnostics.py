@@ -13,11 +13,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+REPO_ROOT = Path(__file__).resolve().parents[4]
+DEFAULT_FULL_GEOMETRIES = {
+    "orbit1": REPO_ROOT / "corto" / "input" / "S10_Spacecraft_Complex_Light" / "geometry" / "geometry.json",
+    "orbit2": REPO_ROOT / "corto" / "input" / "S10_Spacecraft_Orbit_2" / "geometry" / "geometry.json",
+}
+
+
 @dataclass
 class OrbitDiagnostics:
     tag: str
     names: List[str]
     gt_centers: np.ndarray
+    gt_centers_full: np.ndarray
     aligned_centers: np.ndarray
     position_errors: np.ndarray
     view_errors_deg: np.ndarray
@@ -47,15 +55,57 @@ def read_ascii_ply(path: Path) -> Optional[np.ndarray]:
     return np.asarray(points, dtype=float).reshape(-1, 3)
 
 
-def load_orbit(alignment_root: Path, tag: str) -> OrbitDiagnostics:
+def read_geometry_camera_positions(path: Path) -> np.ndarray:
+    payload = read_json(path)
+    try:
+        positions = np.asarray(payload["camera"]["position"], dtype=float)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"Expected geometry['camera']['position'] in {path}") from exc
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise ValueError(f"Expected an Nx3 camera position array in {path}, got {positions.shape}")
+    return positions
+
+
+def load_full_gt_centers(
+    orbit_dir: Path,
+    filtered_gt_centers: np.ndarray,
+    full_geometry_path: Optional[Path] = None,
+) -> np.ndarray:
+    if full_geometry_path is not None and full_geometry_path.is_file():
+        return read_geometry_camera_positions(full_geometry_path)
+
+    summary_path = orbit_dir / "alignment_summary.json"
+    if not summary_path.is_file():
+        return filtered_gt_centers
+
+    summary = read_json(summary_path)
+    if not isinstance(summary, dict) or "geometry_path" not in summary:
+        return filtered_gt_centers
+
+    geometry_path = Path(str(summary["geometry_path"])).expanduser()
+    if not geometry_path.is_absolute():
+        geometry_path = (summary_path.parent / geometry_path).resolve()
+    if not geometry_path.is_file():
+        return filtered_gt_centers
+
+    return read_geometry_camera_positions(geometry_path)
+
+
+def load_orbit(
+    alignment_root: Path,
+    tag: str,
+    full_geometry_path: Optional[Path] = None,
+) -> OrbitDiagnostics:
     orbit_dir = alignment_root / tag
     records = read_json(orbit_dir / "aligned_poses_all_fit.json")
     if not isinstance(records, list) or not records:
         raise ValueError(f"Invalid or empty aligned pose list: {orbit_dir}")
+    gt_centers = np.asarray([row["camera_center_gt"] for row in records], dtype=float)
     return OrbitDiagnostics(
         tag=tag,
         names=[str(row["stem"]) for row in records],
-        gt_centers=np.asarray([row["camera_center_gt"] for row in records], dtype=float),
+        gt_centers=gt_centers,
+        gt_centers_full=load_full_gt_centers(orbit_dir, gt_centers, full_geometry_path),
         aligned_centers=np.asarray([row["camera_center_aligned"] for row in records], dtype=float),
         position_errors=np.asarray([row["position_error"] for row in records], dtype=float),
         view_errors_deg=np.asarray([row["view_direction_error_deg"] for row in records], dtype=float),
@@ -106,25 +156,39 @@ def trajectory_line_points(points: np.ndarray, reference: np.ndarray) -> np.ndar
 def plot_trajectories(
     results: Sequence[OrbitDiagnostics], output: Path, max_sparse_points: int
 ) -> None:
+    colors = {
+        "orbit1": "#0072B2",
+        "orbit2": "#D55E00",
+    }
+    labels = {
+        "orbit1": "safety ellipse 1",
+        "orbit2": "safety ellipse 2",
+    }
+
     fig = plt.figure(figsize=(9, 8))
     ax = fig.add_subplot(111, projection="3d")
     for result in results:
-        gt_line = trajectory_line_points(result.gt_centers, result.gt_centers)
+        color = colors.get(result.tag)
+        label = labels.get(result.tag, result.tag)
+        gt_line = trajectory_line_points(result.gt_centers_full, result.gt_centers_full)
         aligned_line = trajectory_line_points(result.aligned_centers, result.gt_centers)
-        ax.plot(*gt_line.T, linewidth=1, label=f"{result.tag} GT")
+        ax.plot(*gt_line.T, color=color, linewidth=2.0, label=f"{label} GT")
         ax.plot(
             *aligned_line.T,
-            linewidth=1,
+            color=color,
+            linewidth=1.4,
             linestyle="--",
-            label=f"{result.tag} COLMAP aligned",
+            marker="x",
+            markersize=4,
+            label=f"{label} COLMAP aligned",
         )
-        ax.scatter(*result.gt_centers.T, marker="o", s=8)
-        ax.scatter(*result.aligned_centers.T, marker="x", s=10)
-        if result.sparse_points is not None and len(result.sparse_points):
-            cloud = downsample(result.sparse_points, max_sparse_points)
-            ax.scatter(*cloud.T, s=1, alpha=0.08, label=f"{result.tag} sparse")
-    ax.scatter([0], [0], [0], marker="*", s=100, label="target origin")
-    ax.set(xlabel="x", ylabel="y", zlabel="z", title="CORTO/Tango trajectories and aligned COLMAP reconstructions")
+    ax.scatter([0], [0], [0], color="#D62728", s=70, depthshade=False, label="target", zorder=5)
+    ax.set(
+        xlabel="V-BAR X [m]",
+        ylabel="-H-BAR Y [m]",
+        zlabel="R-BAR Z [m]",
+        title="Safety ellipses in CORTO frame",
+    )
     ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
     fig.savefig(output, dpi=180)
@@ -156,12 +220,27 @@ def main() -> None:
     parser.add_argument("--alignment-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--max-sparse-points", type=int, default=5000)
+    parser.add_argument(
+        "--orbit1-full-geometry",
+        type=Path,
+        default=DEFAULT_FULL_GEOMETRIES["orbit1"],
+        help="Complete geometry.json for orbit1 GT plotting.",
+    )
+    parser.add_argument(
+        "--orbit2-full-geometry",
+        type=Path,
+        default=DEFAULT_FULL_GEOMETRIES["orbit2"],
+        help="Complete geometry.json for orbit2 GT plotting.",
+    )
     args = parser.parse_args()
 
     alignment_root = args.alignment_root.expanduser().resolve()
     output = args.output.expanduser().resolve() if args.output else alignment_root
     output.mkdir(parents=True, exist_ok=True)
-    results = [load_orbit(alignment_root, tag) for tag in ("orbit1", "orbit2")]
+    results = [
+        load_orbit(alignment_root, "orbit1", args.orbit1_full_geometry.expanduser().resolve()),
+        load_orbit(alignment_root, "orbit2", args.orbit2_full_geometry.expanduser().resolve()),
+    ]
 
     plot_trajectories(results, output / "trajectories_all_fit.png", args.max_sparse_points)
     plot_errors(results, output / "position_errors_all_fit.png", "position")
