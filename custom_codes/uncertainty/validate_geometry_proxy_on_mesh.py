@@ -143,24 +143,124 @@ def write_sampled_points_csv(path, points_norm, points_gt, hessian, error):
             })
 
 
-def sparsification_curve(error, hessian, seed, steps=101):
+def mean_remaining_errors(error, order, fractions_removed):
+    n = len(error)
+    curve = []
+    for fraction in fractions_removed:
+        remove_count = min(int(round(fraction * n)), n - 1)
+        keep = order[remove_count:]
+        curve.append(float(np.mean(error[keep])))
+    return np.asarray(curve, dtype=np.float64)
+
+
+def integrate_curve_with_endpoint(fractions, values, max_removed_fraction):
+    fractions = np.asarray(fractions, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+    if max_removed_fraction <= 0.0 or max_removed_fraction > fractions.max():
+        raise ValueError('auc_max_removed_fraction must be in (0, {}]'.format(fractions.max()))
+
+    mask = fractions <= max_removed_fraction
+    x = fractions[mask]
+    y = values[mask]
+    if x[-1] < max_removed_fraction:
+        endpoint_value = float(np.interp(max_removed_fraction, fractions, values))
+        x = np.concatenate([x, np.asarray([max_removed_fraction], dtype=np.float64)])
+        y = np.concatenate([y, np.asarray([endpoint_value], dtype=np.float64)])
+    trapezoid = getattr(np, 'trapezoid', np.trapz)
+    return float(trapezoid(y, x))
+
+
+def compute_auc_metrics(fractions, proxy_curve, oracle_curve, random_curves, auc_max_removed_fraction, tolerance=1e-12):
+    auc_proxy = integrate_curve_with_endpoint(fractions, proxy_curve, auc_max_removed_fraction)
+    auc_oracle = integrate_curve_with_endpoint(fractions, oracle_curve, auc_max_removed_fraction)
+    random_mean_curve = random_curves.mean(axis=0)
+    auc_random_mean_curve = integrate_curve_with_endpoint(fractions, random_mean_curve, auc_max_removed_fraction)
+    random_aucs = np.asarray([
+        integrate_curve_with_endpoint(fractions, curve, auc_max_removed_fraction)
+        for curve in random_curves
+    ], dtype=np.float64)
+
+    auc_values = np.concatenate([
+        np.asarray([auc_proxy, auc_oracle, auc_random_mean_curve], dtype=np.float64),
+        random_aucs,
+    ])
+    if not np.all(np.isfinite(auc_values)):
+        raise RuntimeError('non-finite AUC value detected')
+    if auc_oracle > auc_proxy + tolerance:
+        raise RuntimeError('oracle AUC {} is greater than proxy AUC {}'.format(auc_oracle, auc_proxy))
+    if auc_proxy > auc_random_mean_curve + tolerance:
+        print(
+            'WARNING: proxy AUC {} is greater than random-mean AUC {}; lower AUC is better'.format(
+                auc_proxy,
+                auc_random_mean_curve,
+            )
+        )
+
+    return {
+        'max_removed_fraction': float(auc_max_removed_fraction),
+        'auc_proxy': auc_proxy,
+        'auc_random_mean_curve': auc_random_mean_curve,
+        'auc_oracle': auc_oracle,
+        'auc_random_permutation_mean': float(random_aucs.mean()),
+        'auc_random_permutation_std': float(random_aucs.std()),
+        'auc_random_permutation_p05': float(np.percentile(random_aucs, 5)),
+        'auc_random_permutation_p95': float(np.percentile(random_aucs, 95)),
+        'relative_auc_improvement_vs_random': float(
+            (auc_random_mean_curve - auc_proxy) / auc_random_mean_curve
+        ) if auc_random_mean_curve != 0.0 else float('nan'),
+        'normalized_auc_proxy': float(auc_proxy / auc_max_removed_fraction),
+        'normalized_auc_random': float(auc_random_mean_curve / auc_max_removed_fraction),
+        'normalized_auc_oracle': float(auc_oracle / auc_max_removed_fraction),
+    }
+
+
+def sparsification_curve(error, hessian, seed, num_random_permutations=50, steps=101):
     n = len(error)
     fractions_removed = np.linspace(0.0, 0.99, steps)
     rng = np.random.default_rng(seed)
-    orders = {
-        'estimated_proxy': np.argsort(hessian),
-        'random_baseline': rng.permutation(n),
-        'oracle': np.argsort(-error),
-    }
+    proxy_order = np.argsort(hessian)
+    oracle_order = np.argsort(-error)
+    random_orders = [rng.permutation(n) for _ in range(num_random_permutations)]
+
+    proxy_curve = mean_remaining_errors(error, proxy_order, fractions_removed)
+    oracle_curve = mean_remaining_errors(error, oracle_order, fractions_removed)
+    random_curves = np.asarray([
+        mean_remaining_errors(error, order, fractions_removed)
+        for order in random_orders
+    ], dtype=np.float64)
+    if random_curves.shape != (num_random_permutations, len(fractions_removed)):
+        raise RuntimeError(
+            'unexpected random curve matrix shape {}, expected {}'.format(
+                random_curves.shape,
+                (num_random_permutations, len(fractions_removed)),
+            )
+        )
+    if not np.all(np.isfinite(random_curves)):
+        raise RuntimeError('random sparsification curves contain NaN or Inf values')
+
+    random_mean = random_curves.mean(axis=0)
+    random_std = random_curves.std(axis=0)
+    random_p05 = np.percentile(random_curves, 5, axis=0)
+    random_p95 = np.percentile(random_curves, 95, axis=0)
+
     rows = []
-    for fraction in fractions_removed:
-        remove_count = min(int(round(fraction * n)), n - 1)
-        row = {'fraction_removed': float(fraction), 'remaining_points': int(n - remove_count)}
-        for name, order in orders.items():
-            keep = order[remove_count:]
-            row['mean_error_{}'.format(name)] = float(np.mean(error[keep]))
-        rows.append(row)
-    return rows
+    for idx, fraction in enumerate(fractions_removed):
+        rows.append({
+            'removed_fraction': float(fraction),
+            'estimated_proxy_error': float(proxy_curve[idx]),
+            'random_mean_error': float(random_mean[idx]),
+            'random_std_error': float(random_std[idx]),
+            'random_p05_error': float(random_p05[idx]),
+            'random_p95_error': float(random_p95[idx]),
+            'oracle_error': float(oracle_curve[idx]),
+        })
+    return rows, {
+        'fractions': fractions_removed,
+        'proxy_curve': proxy_curve,
+        'oracle_curve': oracle_curve,
+        'random_curves': random_curves,
+        'random_mean_curve': random_mean,
+    }
 
 
 def write_csv(path, rows, fieldnames=None):
@@ -176,20 +276,26 @@ def write_csv(path, rows, fieldnames=None):
 
 
 def validate_sparsification_curves(rows, tolerance=1e-12):
-    estimated = np.asarray([row['mean_error_estimated_proxy'] for row in rows], dtype=np.float64)
-    random = np.asarray([row['mean_error_random_baseline'] for row in rows], dtype=np.float64)
-    oracle = np.asarray([row['mean_error_oracle'] for row in rows], dtype=np.float64)
+    estimated = np.asarray([row['estimated_proxy_error'] for row in rows], dtype=np.float64)
+    random_mean = np.asarray([row['random_mean_error'] for row in rows], dtype=np.float64)
+    random_p05 = np.asarray([row['random_p05_error'] for row in rows], dtype=np.float64)
+    random_p95 = np.asarray([row['random_p95_error'] for row in rows], dtype=np.float64)
+    oracle = np.asarray([row['oracle_error'] for row in rows], dtype=np.float64)
 
-    if estimated.shape != random.shape or estimated.shape != oracle.shape:
+    if estimated.shape != random_mean.shape or estimated.shape != random_p05.shape or estimated.shape != random_p95.shape or estimated.shape != oracle.shape:
         raise RuntimeError(
-            'sparsification curves have mismatched shapes: estimated={}, random={}, oracle={}'.format(
-                estimated.shape, random.shape, oracle.shape
-            )
+            'sparsification curves have mismatched shapes'
         )
-    if not (np.all(np.isfinite(estimated)) and np.all(np.isfinite(random)) and np.all(np.isfinite(oracle))):
+    if not (
+        np.all(np.isfinite(estimated)) and
+        np.all(np.isfinite(random_mean)) and
+        np.all(np.isfinite(random_p05)) and
+        np.all(np.isfinite(random_p95)) and
+        np.all(np.isfinite(oracle))
+    ):
         raise RuntimeError('sparsification curves contain NaN or Inf values')
 
-    initial = np.asarray([estimated[0], random[0], oracle[0]], dtype=np.float64)
+    initial = np.asarray([estimated[0], random_mean[0], random_p05[0], random_p95[0], oracle[0]], dtype=np.float64)
     if np.max(np.abs(initial - initial[0])) > tolerance:
         raise RuntimeError(
             'sparsification curves do not share the same initial mean error: {}'.format(initial.tolist())
@@ -197,16 +303,17 @@ def validate_sparsification_curves(rows, tolerance=1e-12):
     if np.any(np.diff(oracle) > tolerance):
         raise RuntimeError('oracle sparsification curve is not non-increasing within tolerance {}'.format(tolerance))
 
-    return estimated, random, oracle
+    return estimated, random_mean, random_p05, random_p95, oracle
 
 
 def plot_sparsification(path, rows):
-    x = np.asarray([row['fraction_removed'] for row in rows], dtype=np.float64)
-    estimated, random, oracle = validate_sparsification_curves(rows)
+    x = np.asarray([row['removed_fraction'] for row in rows], dtype=np.float64)
+    estimated, random_mean, random_p05, random_p95, oracle = validate_sparsification_curves(rows)
 
     plt.figure(figsize=(7, 5))
     plt.plot(x, estimated, label='Estimated proxy')
-    plt.plot(x, random, label='Random baseline')
+    plt.plot(x, random_mean, label='Random baseline mean')
+    plt.fill_between(x, random_p05, random_p95, alpha=0.25, label='Random baseline 5th–95th percentile')
     plt.plot(x, oracle, label='Oracle')
     plt.xlabel('Fraction of removed points')
     plt.ylabel('Mean geometric error of remaining points')
@@ -255,7 +362,13 @@ def main():
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--conf', type=str, default='./confs/long_test.conf')
     parser.add_argument('--case', type=str, default='')
+    parser.add_argument('--num_random_permutations', type=int, default=50)
+    parser.add_argument('--auc_max_removed_fraction', type=float, default=0.95)
     args = parser.parse_args()
+    if args.num_random_permutations <= 0:
+        raise ValueError('--num_random_permutations must be positive')
+    if args.auc_max_removed_fraction <= 0.0 or args.auc_max_removed_fraction > 0.99:
+        raise ValueError('--auc_max_removed_fraction must be in (0, 0.99]')
 
     os.makedirs(args.output_dir, exist_ok=True)
     hessian_grid = np.load(args.hessian_grid).astype(np.float64)
@@ -285,7 +398,19 @@ def main():
     sampled_csv = os.path.join(args.output_dir, 'sampled_mesh_points_with_proxy.csv')
     write_sampled_points_csv(sampled_csv, points_norm, points_gt, hessian, error)
 
-    curve_rows = sparsification_curve(error, hessian, args.seed)
+    curve_rows, curve_payload = sparsification_curve(
+        error,
+        hessian,
+        args.seed,
+        num_random_permutations=args.num_random_permutations,
+    )
+    auc_payload = compute_auc_metrics(
+        curve_payload['fractions'],
+        curve_payload['proxy_curve'],
+        curve_payload['oracle_curve'],
+        curve_payload['random_curves'],
+        args.auc_max_removed_fraction,
+    )
     write_csv(os.path.join(args.output_dir, 'sparsification_curve.csv'), curve_rows)
     plot_sparsification(os.path.join(args.output_dir, 'sparsification_curve.png'), curve_rows)
 
@@ -307,6 +432,11 @@ def main():
         'mean_geometric_error': float(np.mean(error)),
         'median_geometric_error': float(np.median(error)),
         'quartile_error_summary': quartile_rows,
+        'random_baseline': {
+            'num_permutations': int(args.num_random_permutations),
+            'seed': int(args.seed),
+        },
+        'sparsification_auc': auc_payload,
         'scale_mat_0': scale_mat.tolist(),
         'coordinate_note': (
             'Hessian interpolation is performed in normalized NeuS coordinates before '
@@ -322,6 +452,9 @@ def main():
     print('Spearman H > 0 error vs H:', spearman_pos_h)
     print('Spearman H > 0 error vs -H:', spearman_pos_neg_h)
     print('mean geometric error:', summary['mean_geometric_error'])
+    print('AUC proxy:', auc_payload['auc_proxy'])
+    print('AUC random mean:', auc_payload['auc_random_mean_curve'])
+    print('AUC oracle:', auc_payload['auc_oracle'])
     print('mean error by quartile:')
     for row in quartile_rows:
         print('  Q{}: {}'.format(row['quartile'], row['mean_error']))
