@@ -211,8 +211,12 @@ class NeuSRenderer:
                     background_sampled_color=None,
                     background_rgb=None,
                     cos_anneal_ratio=0.0,
-                    deformation_grid=None):
+                    deformation_grid=None,
+                    diagnostic_mode=None):
         batch_size, n_samples = z_vals.shape
+        supported_modes = ['full', 'geometry_only', 'appearance_only', 'appearance_no_normal_grad']
+        if diagnostic_mode is not None and diagnostic_mode not in supported_modes:
+            raise ValueError('Unsupported diagnostic_mode: {}'.format(diagnostic_mode))
 
         # Section length
         dists = z_vals[..., 1:] - z_vals[..., :-1]
@@ -229,34 +233,55 @@ class NeuSRenderer:
         if deformation_grid is not None:
             pts_query = pts + deformation_grid(pts)
 
-        sdf_nn_output = sdf_network(pts_query)
-        sdf = sdf_nn_output[:, :1]
-        feature_vector = sdf_nn_output[:, 1:]
+        def query_foreground(query_pts, detach_normals_for_color=False):
+            sdf_nn_output = sdf_network(query_pts)
+            query_sdf = sdf_nn_output[:, :1]
+            feature_vector = sdf_nn_output[:, 1:]
+            query_gradients = sdf_network.gradient(query_pts).squeeze()
+            color_gradients = query_gradients.detach() if detach_normals_for_color else query_gradients
+            query_color = color_network(query_pts, color_gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
+            return query_sdf, query_gradients, query_color
 
-        gradients = sdf_network.gradient(pts_query).squeeze()
-        sampled_color = color_network(pts_query, gradients, dirs, feature_vector).reshape(batch_size, n_samples, 3)
+        def compute_alpha(query_sdf, query_gradients):
+            true_cos = (dirs * query_gradients).sum(-1, keepdim=True)
+
+            # "cos_anneal_ratio" grows from 0 to 1 in the beginning training iterations. The anneal strategy below makes
+            # the cos value "not dead" at the beginning training iterations, for better convergence.
+            iter_cos = -(F.relu(-true_cos * 0.5 + 0.5) * (1.0 - cos_anneal_ratio) +
+                         F.relu(-true_cos) * cos_anneal_ratio)  # always non-positive
+
+            # Estimate signed distances at section points
+            estimated_next_sdf = query_sdf + iter_cos * dists.reshape(-1, 1) * 0.5
+            estimated_prev_sdf = query_sdf - iter_cos * dists.reshape(-1, 1) * 0.5
+
+            prev_cdf = torch.sigmoid(estimated_prev_sdf * inv_s)
+            next_cdf = torch.sigmoid(estimated_next_sdf * inv_s)
+
+            p = prev_cdf - next_cdf
+            c = prev_cdf
+            alpha = ((p + 1e-5) / (c + 1e-5)).reshape(batch_size, n_samples).clip(0.0, 1.0)
+            return alpha, c
 
         inv_s = deviation_network(torch.zeros([1, 3], device=pts.device))[:, :1].clip(1e-6, 1e6)           # Single parameter
         inv_s = inv_s.expand(batch_size * n_samples, 1)
 
-        true_cos = (dirs * gradients).sum(-1, keepdim=True)
+        effective_mode = diagnostic_mode or 'full'
+        sdf, gradients, sampled_color = query_foreground(
+            pts_query,
+            detach_normals_for_color=(effective_mode == 'appearance_no_normal_grad')
+        )
+        alpha, c = compute_alpha(sdf, gradients)
 
-        # "cos_anneal_ratio" grows from 0 to 1 in the beginning training iterations. The anneal strategy below makes
-        # the cos value "not dead" at the beginning training iterations, for better convergence.
-        iter_cos = -(F.relu(-true_cos * 0.5 + 0.5) * (1.0 - cos_anneal_ratio) +
-                     F.relu(-true_cos) * cos_anneal_ratio)  # always non-positive
-
-        # Estimate signed distances at section points
-        estimated_next_sdf = sdf + iter_cos * dists.reshape(-1, 1) * 0.5
-        estimated_prev_sdf = sdf - iter_cos * dists.reshape(-1, 1) * 0.5
-
-        prev_cdf = torch.sigmoid(estimated_prev_sdf * inv_s)
-        next_cdf = torch.sigmoid(estimated_next_sdf * inv_s)
-
-        p = prev_cdf - next_cdf
-        c = prev_cdf
-
-        alpha = ((p + 1e-5) / (c + 1e-5)).reshape(batch_size, n_samples).clip(0.0, 1.0)
+        if deformation_grid is not None and effective_mode == 'geometry_only':
+            # Isolate the opacity/weight path: colors come from the undeformed
+            # baseline query and are detached before compositing.
+            _, _, baseline_sampled_color = query_foreground(pts)
+            sampled_color = baseline_sampled_color.detach()
+        elif deformation_grid is not None and effective_mode in ['appearance_only', 'appearance_no_normal_grad']:
+            # Isolate the appearance path: volumetric weights come from the
+            # undeformed baseline geometry and are detached below.
+            baseline_sdf, baseline_gradients, _ = query_foreground(pts)
+            alpha, c = compute_alpha(baseline_sdf, baseline_gradients)
 
         pts_norm = torch.linalg.norm(pts, ord=2, dim=-1, keepdim=True).reshape(batch_size, n_samples)
         inside_sphere = (pts_norm < 1.0).float().detach()
@@ -271,6 +296,8 @@ class NeuSRenderer:
             sampled_color = torch.cat([sampled_color, background_sampled_color[:, n_samples:]], dim=1)
 
         weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], device=alpha.device), 1. - alpha + 1e-7], -1), -1)[:, :-1]
+        if deformation_grid is not None and effective_mode in ['appearance_only', 'appearance_no_normal_grad']:
+            weights = weights.detach()
         weights_sum = weights.sum(dim=-1, keepdim=True)
 
         color = (sampled_color * weights[:, :, None]).sum(dim=1)
@@ -303,7 +330,8 @@ class NeuSRenderer:
                perturb_overwrite=-1,
                background_rgb=None,
                cos_anneal_ratio=0.0,
-               deformation_grid=None):
+               deformation_grid=None,
+               diagnostic_mode=None):
         batch_size = len(rays_o)
         device = rays_o.device
         sample_dist = 2.0 / self.n_samples   # Assuming the region of interest is a unit sphere
@@ -379,7 +407,8 @@ class NeuSRenderer:
                                     background_alpha=background_alpha,
                                     background_sampled_color=background_sampled_color,
                                     cos_anneal_ratio=cos_anneal_ratio,
-                                    deformation_grid=deformation_grid)
+                                    deformation_grid=deformation_grid,
+                                    diagnostic_mode=diagnostic_mode)
 
         color_fine = ret_fine['color']
         weights = ret_fine['weights']
