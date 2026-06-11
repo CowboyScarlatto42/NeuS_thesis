@@ -263,29 +263,28 @@ def print_metrics_table(
         if not exact:
             iter_label += "*"
 
-        rows.append({
+        # include all statistics for pred->gt and gt->pred
+        row = {
             "case": exp_cfg["label"],
             "iter": iter_label,
-            "p2g_mean": format_metric(exp_data["pred_to_gt"][idx, STAT_KEYS.index("mean")]),
-            "p2g_p95": format_metric(exp_data["pred_to_gt"][idx, STAT_KEYS.index("p95")]),
-            "p2g_max": format_metric(exp_data["pred_to_gt"][idx, STAT_KEYS.index("max")]),
-            "g2p_mean": format_metric(exp_data["gt_to_pred"][idx, STAT_KEYS.index("mean")]),
-            "g2p_p95": format_metric(exp_data["gt_to_pred"][idx, STAT_KEYS.index("p95")]),
-            "g2p_max": format_metric(exp_data["gt_to_pred"][idx, STAT_KEYS.index("max")]),
             "chamfer": format_metric(exp_data["symchamfer"][idx]),
             "hausdorff": format_metric(exp_data["hausdorff_distance"][idx]),
             "hausdorff_p95": format_metric(exp_data["hausdorff_p95_distance"][idx]),
-        })
+        }
+        for stat in STAT_KEYS:
+            row[f"p2g_{stat}"] = format_metric(exp_data["pred_to_gt"][idx, STAT_KEYS.index(stat)])
+            row[f"g2p_{stat}"] = format_metric(exp_data["gt_to_pred"][idx, STAT_KEYS.index(stat)])
+        rows.append(row)
 
+    # build columns to show all stats for pred->gt and gt->pred
     columns = [
         ("case", "Case"),
         ("iter", "Iter"),
-        ("p2g_mean", "P->G mean"),
-        ("p2g_p95", "P->G p95"),
-        ("p2g_max", "P->G max"),
-        ("g2p_mean", "G->P mean"),
-        ("g2p_p95", "G->P p95"),
-        ("g2p_max", "G->P max"),
+    ]
+    for prefix, title_prefix in (("p2g", "P->G"), ("g2p", "G->P")):
+        for stat in STAT_KEYS:
+            columns.append((f"{prefix}_{stat}", f"{title_prefix} {stat}"))
+    columns += [
         ("chamfer", "Chamfer"),
         ("hausdorff", "Hausdorff"),
         ("hausdorff_p95", "Hausdorff p95"),
