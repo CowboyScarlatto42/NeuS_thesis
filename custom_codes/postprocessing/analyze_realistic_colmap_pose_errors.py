@@ -814,14 +814,35 @@ def safe_slug(text):
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
+def plot_with_frame_gaps(ax, x, y, label=None, color=None):
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+
+    breaks = np.where(np.diff(x) > 1.0)[0] + 1
+    starts = np.r_[0, breaks]
+    ends = np.r_[breaks, len(x)]
+
+    for segment_index, (start, end) in enumerate(zip(starts, ends)):
+        ax.plot(
+            x[start:end],
+            y[start:end],
+            marker=MARKER,
+            markersize=MARKER_SIZE,
+            linewidth=LINE_WIDTH,
+            label=label if segment_index == 0 else None,
+            color=color,
+        )
+
+
 def plot_metric(df, y_col, ylabel, title, out_path, color=None):
     fig, ax = plt.subplots(figsize=FIG_SIZE)
-    ax.plot(
+    plot_with_frame_gaps(
+        ax,
         df["original_corto_frame_id"],
         df[y_col],
-        marker=MARKER,
-        markersize=MARKER_SIZE,
-        linewidth=LINE_WIDTH,
         color=color,
     )
     ax.set_xlabel("Original CORTO frame id")
@@ -837,12 +858,10 @@ def plot_metric_overlay(sequence_frames, y_col, ylabel, title, out_path):
     fig, ax = plt.subplots(figsize=FIG_SIZE)
     for name, df in sequence_frames.items():
         color = SEQUENCE_COLORS.get(name)
-        ax.plot(
+        plot_with_frame_gaps(
+            ax,
             df["original_corto_frame_id"],
             df[y_col],
-            marker=MARKER,
-            markersize=MARKER_SIZE,
-            linewidth=LINE_WIDTH,
             label=name,
             color=color,
         )
