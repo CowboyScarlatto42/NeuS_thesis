@@ -332,7 +332,7 @@ def quat_wxyz_to_rotmat(q):
     )
 
 
-def load_geometry_corto_camera_poses(path_value):
+def load_geometry_corto_camera_poses(path_value, accepted_frames=None):
     path = require_input_file(path_value, "GT CORTO geometry.json")
     with path.open("r", encoding="utf-8") as handle:
         geometry = json.load(handle)
@@ -348,11 +348,19 @@ def load_geometry_corto_camera_poses(path_value):
     if not np.all(np.isfinite(positions)) or not np.all(np.isfinite(orientations)):
         raise ValueError(f"{path}: geometry contains NaN or infinite values")
 
+    if accepted_frames is not None and len(positions) == len(accepted_frames):
+        frame_ids = [int(frame_id) for frame_id in accepted_frames]
+    else:
+        frame_ids = list(range(len(positions)))
+
+    if len(set(frame_ids)) != len(frame_ids):
+        raise ValueError(f"{path}: GT frame ids contain duplicates")
+
     poses = {}
     # geometry.camera.orientation is q_camera_to_world [w, x, y, z] in the
     # Blender camera convention. Convert it to the CV convention used by NeuS:
     # +X right, +Y down, +Z forward.
-    for frame_id, (center, quat) in enumerate(zip(positions, orientations)):
+    for frame_id, center, quat in zip(frame_ids, positions, orientations):
         pose = np.eye(4, dtype=np.float64)
         R_cw_blender = quat_wxyz_to_rotmat(quat)
         pose[:3, :3] = project_to_so3(
@@ -958,7 +966,7 @@ def process_sequence(config):
     accepted_frames = load_accepted_frames(config.accepted_frames_path)
 
     if not is_todo_path(config.gt_geometry_path):
-        gt_poses = load_geometry_corto_camera_poses(config.gt_geometry_path)
+        gt_poses = load_geometry_corto_camera_poses(config.gt_geometry_path, accepted_frames=accepted_frames)
     else:
         gt_path = require_input_file(config.gt_cameras_path, f"{config.name} GT cameras_sphere.npz")
         gt_poses = load_cameras_sphere_neus(gt_path, use_scale_mat_for_poses=config.use_scale_mat_for_poses)
