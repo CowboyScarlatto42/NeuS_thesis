@@ -58,6 +58,22 @@ def percentile_limits(values, lower_percentile, upper_percentile):
     return lower, upper
 
 
+def resolve_color_limits(values, lower_percentile, upper_percentile, manual_min, manual_max, name):
+    if (manual_min is None) != (manual_max is None):
+        raise ValueError('both --{}_vmin and --{}_vmax must be provided together'.format(name, name))
+    if manual_min is not None:
+        lower = float(manual_min)
+        upper = float(manual_max)
+        if not np.isfinite(lower) or not np.isfinite(upper):
+            raise ValueError('{} manual color limits must be finite'.format(name))
+        if upper <= lower:
+            raise ValueError('--{}_vmax must be greater than --{}_vmin'.format(name, name))
+        return lower, upper, 'manual'
+
+    lower, upper = percentile_limits(values, lower_percentile, upper_percentile)
+    return lower, upper, 'percentile'
+
+
 def values_to_rgba(values, valid_mask, lower, upper, cmap_name, neutral_rgba=(160, 160, 160, 255)):
     rgba = np.zeros((len(values), 4), dtype=np.uint8)
     rgba[:] = np.asarray(neutral_rgba, dtype=np.uint8)
@@ -122,6 +138,10 @@ def main():
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--lower_percentile', type=float, default=5.0)
     parser.add_argument('--upper_percentile', type=float, default=95.0)
+    parser.add_argument('--confidence_vmin', type=float, default=None)
+    parser.add_argument('--confidence_vmax', type=float, default=None)
+    parser.add_argument('--inverse_vmin', type=float, default=None)
+    parser.add_argument('--inverse_vmax', type=float, default=None)
     parser.add_argument('--eps', type=float, default=1e-12)
     args = parser.parse_args()
 
@@ -175,15 +195,21 @@ def main():
     if not np.all(np.isfinite(inverse_sensitivity_visual[valid_mask])):
         raise RuntimeError('non-finite inverse_sensitivity_visual values')
 
-    confidence_lower, confidence_upper = percentile_limits(
+    confidence_lower, confidence_upper, confidence_limit_source = resolve_color_limits(
         log10_hessian[valid_mask],
         args.lower_percentile,
         args.upper_percentile,
+        args.confidence_vmin,
+        args.confidence_vmax,
+        'confidence',
     )
-    inverse_lower, inverse_upper = percentile_limits(
+    inverse_lower, inverse_upper, inverse_limit_source = resolve_color_limits(
         inverse_sensitivity_visual[valid_mask],
         args.lower_percentile,
         args.upper_percentile,
+        args.inverse_vmin,
+        args.inverse_vmax,
+        'inverse',
     )
 
     confidence_rgba = values_to_rgba(
@@ -253,6 +279,16 @@ def main():
         'percentile_settings': {
             'lower_percentile': float(args.lower_percentile),
             'upper_percentile': float(args.upper_percentile),
+        },
+        'manual_color_limits': {
+            'confidence_vmin': args.confidence_vmin,
+            'confidence_vmax': args.confidence_vmax,
+            'inverse_vmin': args.inverse_vmin,
+            'inverse_vmax': args.inverse_vmax,
+        },
+        'color_limit_source': {
+            'confidence': confidence_limit_source,
+            'inverse_sensitivity': inverse_limit_source,
         },
         'effective_percentile_limits': {
             'confidence': {
