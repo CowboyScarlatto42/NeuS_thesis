@@ -3,8 +3,17 @@ import csv
 import json
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 import numpy as np
+
+if 'MPLCONFIGDIR' not in os.environ:
+    mpl_cache_dir = Path(tempfile.gettempdir()) / 'matplotlib'
+    mpl_cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ['MPLCONFIGDIR'] = str(mpl_cache_dir)
+
+import matplotlib.pyplot as plt
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 POSTPROCESSING_DIR = os.path.join(REPO_ROOT, 'custom_codes', 'postprocessing')
@@ -83,6 +92,134 @@ def proxy_values_from_hessian(hessian, eps):
         'log10_hessian': np.log10(hessian + eps),
         'inverse_log10_hessian': -np.log10(hessian + eps),
     }
+
+
+def mean_remaining_errors(error, order, fractions_removed):
+    n = len(error)
+    curve = []
+    for fraction in fractions_removed:
+        remove_count = min(int(round(fraction * n)), n - 1)
+        keep = order[remove_count:]
+        curve.append(float(np.mean(error[keep])))
+    return np.asarray(curve, dtype=np.float64)
+
+
+def sparsification_curve(error, uncertainty, seed, num_random_permutations=50, steps=101):
+    n = len(error)
+    fractions_removed = np.linspace(0.0, 0.99, steps)
+    rng = np.random.default_rng(seed)
+    proxy_order = np.argsort(-uncertainty)
+    oracle_order = np.argsort(-error)
+    random_orders = [rng.permutation(n) for _ in range(num_random_permutations)]
+
+    proxy_curve = mean_remaining_errors(error, proxy_order, fractions_removed)
+    oracle_curve = mean_remaining_errors(error, oracle_order, fractions_removed)
+    random_curves = np.asarray([
+        mean_remaining_errors(error, order, fractions_removed)
+        for order in random_orders
+    ], dtype=np.float64)
+
+    random_mean = random_curves.mean(axis=0)
+    random_std = random_curves.std(axis=0)
+    random_p05 = np.percentile(random_curves, 5, axis=0)
+    random_p95 = np.percentile(random_curves, 95, axis=0)
+
+    rows = []
+    for idx, fraction in enumerate(fractions_removed):
+        rows.append({
+            'removed_fraction': float(fraction),
+            'proxy_error': float(proxy_curve[idx]),
+            'random_mean_error': float(random_mean[idx]),
+            'random_std_error': float(random_std[idx]),
+            'random_p05_error': float(random_p05[idx]),
+            'random_p95_error': float(random_p95[idx]),
+            'oracle_error': float(oracle_curve[idx]),
+        })
+    return rows, {
+        'fractions': fractions_removed,
+        'proxy_curve': proxy_curve,
+        'oracle_curve': oracle_curve,
+        'random_curves': random_curves,
+        'random_mean_curve': random_mean,
+    }
+
+
+def integrate_curve_with_endpoint(fractions, values, max_removed_fraction):
+    fractions = np.asarray(fractions, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+    if max_removed_fraction <= 0.0 or max_removed_fraction > fractions.max():
+        raise ValueError('max_removed_fraction must be in (0, {}]'.format(fractions.max()))
+
+    mask = fractions <= max_removed_fraction
+    x = fractions[mask]
+    y = values[mask]
+    if x[-1] < max_removed_fraction:
+        endpoint_value = float(np.interp(max_removed_fraction, fractions, values))
+        x = np.concatenate([x, np.asarray([max_removed_fraction], dtype=np.float64)])
+        y = np.concatenate([y, np.asarray([endpoint_value], dtype=np.float64)])
+    trapezoid = getattr(np, 'trapezoid', np.trapz)
+    return float(trapezoid(y, x))
+
+
+def compute_auc_metrics(fractions, proxy_curve, oracle_curve, random_curves, max_removed_fraction):
+    auc_proxy = integrate_curve_with_endpoint(fractions, proxy_curve, max_removed_fraction)
+    auc_oracle = integrate_curve_with_endpoint(fractions, oracle_curve, max_removed_fraction)
+    random_mean_curve = random_curves.mean(axis=0)
+    auc_random_mean_curve = integrate_curve_with_endpoint(fractions, random_mean_curve, max_removed_fraction)
+    random_aucs = np.asarray([
+        integrate_curve_with_endpoint(fractions, curve, max_removed_fraction)
+        for curve in random_curves
+    ], dtype=np.float64)
+
+    return {
+        'max_removed_fraction': float(max_removed_fraction),
+        'auc_proxy': float(auc_proxy),
+        'auc_random_mean_curve': float(auc_random_mean_curve),
+        'auc_oracle': float(auc_oracle),
+        'auc_random_permutation_mean': float(random_aucs.mean()),
+        'auc_random_permutation_std': float(random_aucs.std()),
+        'auc_random_permutation_p05': float(np.percentile(random_aucs, 5)),
+        'auc_random_permutation_p95': float(np.percentile(random_aucs, 95)),
+        'relative_auc_improvement_vs_random': float(
+            (auc_random_mean_curve - auc_proxy) / auc_random_mean_curve
+        ) if auc_random_mean_curve != 0.0 else float('nan'),
+        'normalized_auc_proxy': float(auc_proxy / max_removed_fraction),
+        'normalized_auc_random': float(auc_random_mean_curve / max_removed_fraction),
+        'normalized_auc_oracle': float(auc_oracle / max_removed_fraction),
+    }
+
+
+def write_rows_csv(path, rows):
+    if len(rows) == 0:
+        return
+    with open(path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def plot_sparsification(path, rows):
+    x = np.asarray([row['removed_fraction'] for row in rows], dtype=np.float64)
+    proxy = np.asarray([row['proxy_error'] for row in rows], dtype=np.float64)
+    random_mean = np.asarray([row['random_mean_error'] for row in rows], dtype=np.float64)
+    random_p05 = np.asarray([row['random_p05_error'] for row in rows], dtype=np.float64)
+    random_p95 = np.asarray([row['random_p95_error'] for row in rows], dtype=np.float64)
+    oracle = np.asarray([row['oracle_error'] for row in rows], dtype=np.float64)
+
+    plt.figure(figsize=(7, 5))
+    plt.plot(x, proxy, label='Uncertainty proxy')
+    plt.plot(x, random_mean, label='Random')
+    plt.fill_between(x, random_p05, random_p95, alpha=0.25, label='_nolegend_')
+    plt.plot(x, oracle, label='Oracle')
+    plt.xlabel('Fraction of removed points')
+    plt.ylabel('Mean pred-to-GT NN distance of remaining points')
+    plt.title('Sparsification curve')
+    plt.xlim(0.0, 0.95)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(path, dpi=300)
+    plt.close()
 
 
 def interpolate_hessian_grid(hessian_grid, points_norm):
@@ -194,6 +331,8 @@ def main():
     parser.add_argument('--num_surface_points', type=int, default=50000)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--eps', type=float, default=1e-12)
+    parser.add_argument('--num_random_permutations', type=int, default=50)
+    parser.add_argument('--auc_max_removed_fraction', type=float, default=0.95)
     parser.add_argument('--output_dir', type=str, required=True)
     args = parser.parse_args()
 
@@ -201,6 +340,10 @@ def main():
         raise ValueError('--num_surface_points must be positive')
     if args.eps <= 0.0:
         raise ValueError('--eps must be positive')
+    if args.num_random_permutations <= 0:
+        raise ValueError('--num_random_permutations must be positive')
+    if args.auc_max_removed_fraction <= 0.0 or args.auc_max_removed_fraction > 0.99:
+        raise ValueError('--auc_max_removed_fraction must be in (0, 0.99]')
 
     from metrics_utils import load_mesh, nn_distances, sample_surface_points
 
@@ -235,6 +378,19 @@ def main():
         name: spearman_payload(pred_to_gt, values)
         for name, values in proxies.items()
     }
+    sparsification_rows, sparsification_payload = sparsification_curve(
+        pred_to_gt,
+        proxies['inverse_log10_hessian'],
+        args.seed,
+        num_random_permutations=args.num_random_permutations,
+    )
+    auc_payload = compute_auc_metrics(
+        sparsification_payload['fractions'],
+        sparsification_payload['proxy_curve'],
+        sparsification_payload['oracle_curve'],
+        sparsification_payload['random_curves'],
+        args.auc_max_removed_fraction,
+    )
 
     np.save(os.path.join(args.output_dir, 'pred_points_normalized.npy'), pred_points)
     np.save(os.path.join(args.output_dir, 'gt_points_normalized.npy'), gt_points)
@@ -246,6 +402,14 @@ def main():
         pred_to_gt,
         hessian,
         proxies,
+    )
+    write_rows_csv(
+        os.path.join(args.output_dir, 'sparsification_curve.csv'),
+        sparsification_rows,
+    )
+    plot_sparsification(
+        os.path.join(args.output_dir, 'sparsification_curve.png'),
+        sparsification_rows,
     )
 
     summary = {
@@ -268,6 +432,14 @@ def main():
         'pred_to_gt_distance_stats': finite_stats(pred_to_gt),
         'hessian_stats': finite_stats(hessian),
         'spearman_pred_to_gt_distance_vs_proxy': spearman,
+        'sparsification': {
+            'uncertainty_proxy': 'inverse_log10_hessian',
+            'random_baseline': {
+                'num_permutations': int(args.num_random_permutations),
+                'seed': int(args.seed),
+            },
+            'auc': auc_payload,
+        },
     }
     save_json(os.path.join(args.output_dir, 'spearman_mesh_metrics_distance_summary.json'), summary)
 
@@ -276,6 +448,9 @@ def main():
     print('pred->gt distance mean:', summary['pred_to_gt_distance_stats']['mean'])
     for name, payload in spearman.items():
         print('Spearman distance vs {}: {}'.format(name, payload))
+    print('AUC proxy:', auc_payload['auc_proxy'])
+    print('AUC random mean:', auc_payload['auc_random_mean_curve'])
+    print('AUC oracle:', auc_payload['auc_oracle'])
     print('output_dir:', args.output_dir)
 
 
