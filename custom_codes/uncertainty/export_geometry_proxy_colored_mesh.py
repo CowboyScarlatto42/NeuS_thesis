@@ -120,7 +120,7 @@ def save_colorbar(path, cmap_name, lower, upper, title, label):
     sm = cm.ScalarMappable(norm=norm, cmap=cm.get_cmap(cmap_name))
     sm.set_array([])
     cbar = fig.colorbar(sm, cax=ax, orientation='horizontal')
-    cbar.set_label('{}\npercentile-clipped range: [{:.6g}, {:.6g}]'.format(label, lower, upper))
+    cbar.set_label(label)
     ax.set_title(title)
     fig.savefig(path, dpi=300, bbox_inches='tight')
     plt.close(fig)
@@ -255,8 +255,8 @@ def main():
         'magma',
         inverse_lower,
         inverse_upper,
-        'Inverse sensitivity visualization',
-        '-log10(H + eps)',
+        'Uncertainty score',
+        r'$U = -\log_{10}(H + \epsilon)$',
     )
 
     h_positive_count = int((hessian_raw[valid_mask] > 0.0).sum())
